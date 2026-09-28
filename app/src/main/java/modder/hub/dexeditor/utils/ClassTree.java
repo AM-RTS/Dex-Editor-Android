@@ -37,6 +37,8 @@ package modder.hub.dexeditor.utils;
 
 import android.annotation.SuppressLint;
 import android.os.Environment;
+import android.system.ErrnoException;
+import android.system.Os;
 
 import androidx.annotation.NonNull;
 
@@ -106,6 +108,10 @@ public class ClassTree {
 
     private String DELETED_CLASSES_JSON;
     private final String workDir;
+    private File recoveryJsonFile;
+    private File sourceManifestFile;
+    private final Map<String, String> recoveryFingerprints = new HashMap<>();
+    private final Map<String, String> recoverySmaliByType = new HashMap<>();
     private volatile boolean changed;
     private final Map<String, java.util.HashSet<String>> editedClassMap = new HashMap<>();
     private final Map<String, String> pendingSmaliMap = new ConcurrentHashMap<>();
@@ -145,8 +151,11 @@ public class ClassTree {
         validateSourceDexPaths();
         DexFilePublisher.recoverPendingPublication(sourceDexPaths);
         initPaths();
+        validateRecoverySources();
         loadDeletedClasses();
         initMultiDex();
+        verifyLoadedRecoverySources();
+        loadStagedEdits();
     }
 
     private void validateSourceDexPaths() throws IOException {
@@ -172,6 +181,166 @@ public class ClassTree {
             dir.mkdirs();
         }
         DELETED_CLASSES_JSON = new File(dir, "deletedclasses.json").getAbsolutePath();
+        recoveryJsonFile = new File(dir, "staged-smali.json");
+        sourceManifestFile = new File(dir, "source-fingerprints.json");
+    }
+
+    private void validateRecoverySources() throws IOException {
+        restoreAtomicBackup(recoveryJsonFile);
+        restoreAtomicBackup(sourceManifestFile);
+        Map<String, String> current = new LinkedHashMap<>();
+        for (String path : sourceDexPaths) {
+            File source = new File(path).getCanonicalFile();
+            current.put(source.getAbsolutePath(), sha256(source));
+        }
+
+        boolean hasSavedState = recoveryJsonFile.exists() || new File(DELETED_CLASSES_JSON).exists()
+                || new File(DELETED_CLASSES_JSON + ".bak").exists();
+        if (hasSavedState) {
+            if (!sourceManifestFile.exists()) {
+                archiveStaleRecoveryFiles();
+            } else {
+                SourceManifest saved;
+                try (InputStream input = new FileInputStream(sourceManifestFile)) {
+                    saved = new Gson().fromJson(new java.io.InputStreamReader(input, StandardCharsets.UTF_8),
+                            SourceManifest.class);
+                } catch (RuntimeException e) {
+                    throw new IOException("Unable to read DEX recovery manifest.", e);
+                }
+                if (saved == null || saved.version != 1 || !current.equals(saved.fingerprints)) {
+                    archiveStaleRecoveryFiles();
+                }
+            }
+        }
+        setRecoveryFingerprints(current);
+        writeJsonAtomically(sourceManifestFile, new SourceManifest(current));
+    }
+
+    private void archiveStaleRecoveryFiles() throws IOException {
+        long stamp = System.currentTimeMillis();
+        File[] candidates = {recoveryJsonFile, new File(DELETED_CLASSES_JSON),
+                new File(DELETED_CLASSES_JSON + ".bak")};
+        for (File candidate : candidates) {
+            if (candidate.exists() && !candidate.renameTo(new File(candidate.getPath() + ".stale." + stamp))) {
+                throw new IOException("Could not preserve recovery data for a different DEX version: " + candidate.getName());
+            }
+        }
+    }
+
+    private void loadStagedEdits() throws IOException {
+        if (!recoveryJsonFile.exists()) return;
+        final Map<String, String> staged;
+        try (InputStream input = new FileInputStream(recoveryJsonFile)) {
+            staged = new Gson().fromJson(new java.io.InputStreamReader(input, StandardCharsets.UTF_8),
+                    new TypeToken<Map<String, String>>() {}.getType());
+        } catch (RuntimeException e) {
+            throw new IOException("Unable to read staged Smali recovery data.", e);
+        }
+        if (staged == null) throw new IOException("Staged Smali recovery data is empty.");
+        synchronized (classMap) {
+            for (Map.Entry<String, String> entry : staged.entrySet()) {
+                String type = entry.getKey();
+                String smali = entry.getValue();
+                if (type == null || smali == null) throw new IOException("Staged Smali recovery data has an invalid entry.");
+                if (!classMap.containsKey(type)) continue; // Deleted classes remain governed by deletedclasses.json.
+                pendingSmaliMap.put(type, smali);
+                recoverySmaliByType.put(type, smali);
+                recordEditedClass(type);
+                changed = true;
+                editRevision++;
+            }
+        }
+    }
+
+    private void verifyLoadedRecoverySources() throws IOException {
+        Map<String, String> loaded = new LinkedHashMap<>();
+        for (String path : sourceDexPaths) {
+            File source = new File(path).getCanonicalFile();
+            String fingerprint = sourceFingerprintByFile.get(source.getName());
+            loaded.put(source.getAbsolutePath(), fingerprint);
+        }
+        if (!recoveryFingerprints.equals(loaded)) {
+            throw new IOException("A source DEX changed while the workspace was loading. Reopen the DEX to avoid applying stale recovery data.");
+        }
+    }
+
+    private static final class SourceManifest {
+        int version = 1;
+        final Map<String, String> fingerprints;
+
+        SourceManifest(Map<String, String> fingerprints) {
+            this.fingerprints = new LinkedHashMap<>(fingerprints);
+        }
+    }
+
+    private static void writeJsonAtomically(File target, Object value) throws IOException {
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("Could not create recovery directory.");
+        }
+        File temp = new File(target.getPath() + ".tmp");
+        try (FileOutputStream output = new FileOutputStream(temp);
+             OutputStreamWriter writer = new OutputStreamWriter(output, StandardCharsets.UTF_8)) {
+            new Gson().toJson(value, writer);
+            writer.flush();
+            output.getFD().sync();
+        } catch (IOException e) {
+            temp.delete();
+            throw e;
+        }
+        try {
+            Os.rename(temp.getAbsolutePath(), target.getAbsolutePath());
+        } catch (ErrnoException | RuntimeException e) {
+            replaceWithBackup(temp, target, e);
+        }
+    }
+
+    private static void replaceWithBackup(File temp, File target, Exception cause) throws IOException {
+        File backup = new File(target.getPath() + ".bak");
+        if (backup.exists() && !backup.delete()) {
+            temp.delete();
+            throw new IOException("Could not clear the old recovery backup.", cause);
+        }
+        boolean movedTarget = target.exists();
+        if (movedTarget && !target.renameTo(backup)) {
+            temp.delete();
+            throw new IOException("Could not back up the previous recovery data.", cause);
+        }
+        if (!temp.renameTo(target)) {
+            if (movedTarget) backup.renameTo(target);
+            temp.delete();
+            throw new IOException("Could not publish recovery data.", cause);
+        }
+        if (backup.exists()) backup.delete();
+    }
+
+    private static void restoreAtomicBackup(File target) throws IOException {
+        File backup = new File(target.getPath() + ".bak");
+        if (!backup.exists()) return;
+        if (target.exists()) {
+            if (!backup.delete()) throw new IOException("Could not clear a completed recovery backup.");
+        } else if (!backup.renameTo(target)) {
+            throw new IOException("Could not restore the previous recovery data.");
+        }
+    }
+
+    private void persistStagedEdits(Map<String, String> staged) throws IOException {
+        if (staged.isEmpty()) {
+            if (recoveryJsonFile.exists() && !recoveryJsonFile.delete()) {
+                throw new IOException("Could not clear staged Smali recovery data.");
+            }
+        } else {
+            writeJsonAtomically(recoveryJsonFile, staged);
+        }
+        recoverySmaliByType.clear();
+        recoverySmaliByType.putAll(staged);
+    }
+
+    private void setRecoveryFingerprints(Map<String, String> fingerprints) {
+        synchronized (recoveryFingerprints) {
+            recoveryFingerprints.clear();
+            recoveryFingerprints.putAll(fingerprints);
+        }
     }
 
     private void initMultiDex() throws Exception {
@@ -384,6 +553,11 @@ public class ClassTree {
         synchronized (classMap) {
             editRevision++;
         }
+        Map<String, String> remainingRecovery = new HashMap<>(recoverySmaliByType);
+        for (String type : new ArrayList<>(remainingRecovery.keySet())) {
+            if (shouldRemove(type, individualClasses, folderPrefixes)) remainingRecovery.remove(type);
+        }
+        persistStagedEdits(remainingRecovery);
     }
 
     private boolean shouldRemove(String className, Set<String> individualClasses, List<String> folderPrefixes) {
@@ -425,6 +599,13 @@ public class ClassTree {
     // it's just a mapping way to preserve  smali data in memeory, but it's not a good way it may cause self kill app like situation and mt manager never do like this
     public void saveSmali(String type, String smali) {
         synchronized (classMap) {
+            Map<String, String> updatedRecovery = new HashMap<>(recoverySmaliByType);
+            updatedRecovery.put(type, smali);
+            try {
+                persistStagedEdits(updatedRecovery);
+            } catch (IOException e) {
+                throw new IllegalStateException("Could not preserve the unsaved Smali edit.", e);
+            }
             pendingSmaliMap.put(type, smali);
             recordEditedClass(type);
             editRevision++;
@@ -535,6 +716,16 @@ public class ClassTree {
                     throw new IllegalArgumentException("Replacement contains duplicate class: " + descriptor);
                 }
             }
+            Map<String, String> updatedRecovery = new HashMap<>(recoverySmaliByType);
+            try {
+                for (ClassDef classDef : classDefs) {
+                    String type = typeName(classDef.getType());
+                    updatedRecovery.put(type, getPureSmaliFromClassDef(classDef));
+                }
+                persistStagedEdits(updatedRecovery);
+            } catch (Exception e) {
+                throw new IllegalStateException("Could not preserve the staged DEX edits.", e);
+            }
             for (ClassDef classDef : classDefs) saveClassDefLocked(classDef);
         }
     }
@@ -643,6 +834,20 @@ public class ClassTree {
                 verifySourceDexesUnchanged();
                 DexFilePublisher.publishAtomically(preparedDexes);
                 commitPreparedDexes(preparedDexes);
+            }
+            synchronized (classMap) {
+                pendingSmaliMap.clear();
+                editedClassMap.clear();
+                deletedClassJson.clear();
+                saveDeletedClasses();
+                persistStagedEdits(Collections.<String, String>emptyMap());
+                Map<String, String> currentSources = new LinkedHashMap<>();
+                for (String path : sourceDexPaths) {
+                    File source = new File(path).getCanonicalFile();
+                    currentSources.put(source.getAbsolutePath(), sha256(source));
+                }
+                setRecoveryFingerprints(currentSources);
+                writeJsonAtomically(sourceManifestFile, new SourceManifest(currentSources));
             }
             changed = false;
         } finally {
@@ -880,6 +1085,12 @@ public class ClassTree {
 
     public String getPendingSmali(String type) { return pendingSmaliMap.get(type); }
 
+    public Map<String, String> getRecoveryFingerprints() {
+        synchronized (recoveryFingerprints) {
+            return Collections.unmodifiableMap(new HashMap<>(recoveryFingerprints));
+        }
+    }
+
     public List<TreeNode> buildEditedFullTree() {
         List<String> editedClasses = new ArrayList<>();
         for (java.util.HashSet<String> classes : editedClassMap.values()) {
@@ -908,21 +1119,7 @@ public class ClassTree {
         dexVersionByFile.clear();
         sourceFingerprintByFile.clear();
         dexVersionByType.clear();
-        // Clean up cache directory
-        if (workDir != null) {
-            deleteRecursive(new File(workDir));
-        }
-        
         System.gc();
-    }
-
-    private void deleteRecursive(File fileOrDirectory) {
-        if (fileOrDirectory.isDirectory()) {
-            for (File child : Objects.requireNonNull(fileOrDirectory.listFiles())) {
-                deleteRecursive(child);
-            }
-        }
-        fileOrDirectory.delete();
     }
 
     public byte[] read(String fileName) throws IOException {

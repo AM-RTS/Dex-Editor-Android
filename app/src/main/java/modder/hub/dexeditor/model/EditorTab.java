@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class EditorTab {
     private static long nextId = 1;
 
-    public final long id = nextId++;
+    public final long id;
     public String className;
     public String title;
     public String subtitle;
@@ -23,6 +23,12 @@ public final class EditorTab {
     public String pendingMethodName;
 
     public EditorTab(String className, String title, String subtitle, String content, int type) {
+        this(nextId++, className, title, subtitle, content, type);
+    }
+
+    public EditorTab(long id, String className, String title, String subtitle, String content, int type) {
+        this.id = id > 0 ? id : nextId++;
+        nextId = Math.max(nextId, this.id + 1);
         this.className = className;
         this.title = title;
         this.subtitle = subtitle;

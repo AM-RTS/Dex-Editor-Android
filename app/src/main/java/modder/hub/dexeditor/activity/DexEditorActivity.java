@@ -82,6 +82,10 @@ import com.google.android.material.tabs.TabLayout;
 import com.google.android.material.tabs.TabLayoutMediator;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -106,6 +110,7 @@ import modder.hub.dexeditor.utils.EdgeToEdge;
 import modder.hub.dexeditor.utils.FilePermissionManager;
 import modder.hub.dexeditor.utils.EditorHelper;
 import modder.hub.dexeditor.utils.EditorPositionManager;
+import modder.hub.dexeditor.utils.EditorSessionRecovery;
 import modder.hub.dexeditor.utils.Notify_MT;
 import modder.hub.dexeditor.utils.SketchwareUtil;
 import modder.hub.dexeditor.utils.UIHelper;
@@ -164,6 +169,9 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
     private DexLoadTask dexLoadTask;
     private DexSaveAndExitTask saveAndExitTask;
     private final BackgroundTaskScope backgroundTasks = new BackgroundTaskScope();
+    private final Handler editorSessionHandler = new Handler(Looper.getMainLooper());
+    private File editorSessionFile;
+    private Runnable pendingEditorSessionSave;
 
     public ClassTree getClassTree() {
         return classTree;
@@ -365,6 +373,7 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
             public void onPageSelected(int position) {
                 int previousIndex = currentTabIndex;
                 currentTabIndex = position;
+                scheduleEditorSessionSave();
 
                 // Targeted updates to reduce lag
                 if (previousIndex != -1) {
@@ -481,15 +490,29 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
         fabDelete.setImageTintList(ColorStateList.valueOf(0xFFFFFFFF));
         fabDelete.hide();
 
-        String uniqueId = (System.currentTimeMillis() % 1000000) + "_" + (new java.util.Random().nextInt(9000) + 1000);
-        File cacheDir = new File(getCacheDir(), "dex_editor_" + uniqueId);
-
         if (dexPaths != null && !dexPaths.isEmpty()) {
-            dexLoadTask = new DexLoadTask(this, dexPaths, cacheDir.getAbsolutePath());
+            File sessionDir = getDexSessionDirectory(dexPaths);
+            editorSessionFile = EditorSessionRecovery.fileIn(sessionDir);
+            dexLoadTask = new DexLoadTask(this, dexPaths, sessionDir.getAbsolutePath());
             dexLoadTask.start();
         } else {
             showErrorDialog("No DEX files provided");
             finish();
+        }
+    }
+
+    private File getDexSessionDirectory(List<String> dexPaths) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String path : dexPaths) {
+                digest.update(new File(path).getCanonicalPath().getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            StringBuilder id = new StringBuilder();
+            for (byte value : digest.digest()) id.append(String.format(java.util.Locale.ROOT, "%02x", value & 0xff));
+            return new File(new File(getFilesDir(), "dex_editor_sessions"), id.toString());
+        } catch (IOException | NoSuchAlgorithmException e) {
+            throw new IllegalStateException("Could not identify this DEX editing session.", e);
         }
     }
 
@@ -500,6 +523,7 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
         }
         classTree = loadedTree;
         try {
+            restoreEditorSession(loadedTree);
             treeRoots.clear();
             treeRoots.addAll(roots);
             modifiedNodes.clear();
@@ -512,6 +536,20 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
         } catch (Exception e) {
             showErrorDialog("UI update failed: " + e.getMessage());
         }
+    }
+
+    private void restoreEditorSession(ClassTree loadedTree) throws IOException {
+        if (editorSessionFile == null) return;
+        EditorSessionRecovery.Session saved = EditorSessionRecovery.restore(editorSessionFile, loadedTree);
+        if (saved == null) return;
+        tabs.clear();
+        tabs.addAll(saved.createTabs(loadedTree));
+        currentTabIndex = tabs.isEmpty() ? -1 : Math.max(0, Math.min(saved.getSelectedTab(), tabs.size() - 1));
+        tabNavigationHistory.clear();
+        tabNavigationHistory.addAll(saved.getNavigationHistory());
+        tabAdapter.notifyDataSetChanged();
+        tabsAdapter.notifyDataSetChanged();
+        if (saved.isEditorVisible() && currentTabIndex >= 0) showEditor(currentTabIndex);
     }
 
     void onDexLoadError(Exception error) {
@@ -546,6 +584,7 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
 
                 tabAdapter.notifyItemMoved(fromTab, toTab);
                 tabsAdapter.notifyItemMoved(fromPos, toPos);
+                scheduleEditorSessionSave();
                 return true;
             }
 
@@ -1160,6 +1199,7 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
         tabAdapter.notifyItemInserted(tabs.size() - 1);
         tabsAdapter.notifyItemInserted(tabs.size());
         showEditor(tabs.size() - 1);
+        scheduleEditorSessionSave();
     }
 
     @SuppressLint("NotifyDataSetChanged")
@@ -1206,9 +1246,12 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
             tabsAdapter.notifyItemChanged(0);
             tabsAdapter.notifyItemChanged(index + 1);
             updateToolbar();
+            scheduleEditorSessionSave();
         } else if (oldIndex != index) {
             tabNavigationHistory.push(oldIndex);
             viewPager.setCurrentItem(index, true);
+            currentTabIndex = index;
+            scheduleEditorSessionSave();
         }
 
         fabDelete.hide();
@@ -1243,6 +1286,7 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
                         if (oldIndex != -1) {
                             tabsAdapter.notifyItemChanged(oldIndex + 1);
                         }
+                        scheduleEditorSessionSave();
                     }
                 })
                 .start();
@@ -1276,6 +1320,7 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
                         tabsAdapter.notifyItemChanged(i + 1); // Fixed index: tabs start at position 1
                         invalidateOptionsMenu();
                     }
+                    scheduleEditorSessionSave();
                 }
                 break;
             }
@@ -1457,6 +1502,7 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
     }
 
     private void exitActivity() {
+        persistEditorSession();
         tabs.clear();
         tabNavigationHistory.clear();
         currentTabIndex = -1;
@@ -1602,6 +1648,7 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
             int nextIndex = Math.max(0, index - 1);
             viewPager.setCurrentItem(nextIndex, true);
         }
+        scheduleEditorSessionSave();
     }
 
     private void removeTab(EditorTab tab) {
@@ -1738,7 +1785,45 @@ public class DexEditorActivity extends AppCompatActivity implements EditorTabsAd
         outState.putParcelable("navigation.methods", navigationMethodsState);
         outState.putParcelable("navigation.strings", navigationStringsState);
         outState.putBoolean("navigation.showingStrings", navigationShowingStrings);
+        persistEditorSession();
         super.onSaveInstanceState(outState);
+    }
+
+    @Override
+    protected void onStop() {
+        persistEditorSession();
+        super.onStop();
+    }
+
+    void scheduleEditorSessionSave() {
+        if (editorSessionFile == null || classTree == null) return;
+        if (pendingEditorSessionSave != null) editorSessionHandler.removeCallbacks(pendingEditorSessionSave);
+        pendingEditorSessionSave = this::persistEditorSession;
+        editorSessionHandler.postDelayed(pendingEditorSessionSave, 400);
+    }
+
+    void clearEditorSessionRecovery() {
+        if (pendingEditorSessionSave != null) {
+            editorSessionHandler.removeCallbacks(pendingEditorSessionSave);
+            pendingEditorSessionSave = null;
+        }
+        if (editorSessionFile != null && editorSessionFile.exists() && !editorSessionFile.delete()) {
+            android.util.Log.e("DexEditorActivity", "Could not clear the saved editor session");
+        }
+    }
+
+    private void persistEditorSession() {
+        if (editorSessionFile == null || classTree == null || isFinishing() || isDestroyed()) return;
+        if (pendingEditorSessionSave != null) {
+            editorSessionHandler.removeCallbacks(pendingEditorSessionSave);
+            pendingEditorSessionSave = null;
+        }
+        try {
+            EditorSessionRecovery.save(editorSessionFile, classTree, getOpenTabsSnapshot(), currentTabIndex,
+                    viewPager.getVisibility() == View.VISIBLE, new ArrayList<>(tabNavigationHistory));
+        } catch (IOException e) {
+            android.util.Log.e("DexEditorActivity", "Could not persist the editor session", e);
+        }
     }
 
     private void startSaveAndExit() {

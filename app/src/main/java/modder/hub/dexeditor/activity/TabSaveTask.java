@@ -94,6 +94,7 @@ final class TabSaveTask {
                         tree.commitClassDefs(expectedRevision, Collections.singletonList(editedClass));
                         progress.dismiss();
                         tab.markCommitted(codeToSave);
+                        host.scheduleEditorSessionSave();
                         int currentIndex = host.getOpenTabsSnapshot().indexOf(tab);
                         if (currentIndex != -1) host.tabsAdapter.notifyItemChanged(currentIndex + 1);
                         host.needsModifiedTreeRebuild = true;

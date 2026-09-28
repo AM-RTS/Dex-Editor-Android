@@ -82,6 +82,7 @@ final class DexSaveAndExitTask implements DialogInterface.OnClickListener {
                 }
             });
             activity.runOnUiThreadIfAlive(() -> {
+                activity.clearEditorSessionRecovery();
                 EditorPositionManager.getInstance(activity).clear();
                 SketchwareUtil.showMessage(activity.getApplicationContext(), "Success");
                 activity.finish();
