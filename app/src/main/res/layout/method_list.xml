@@ -2,17 +2,15 @@
 <!-- This is a modified version of AXMLPrinter2(By Google) library. Check out how many changes are made at https://github.com/developer-krushna/AXMLPrinter by (@developer-krushna) -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:orientation="vertical"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:orientation="horizontal"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content">
-    <LinearLayout
-        android:gravity="center"
-        android:layout_gravity="center"
-        android:orientation="horizontal"
-        android:id="@+id/linear_bg"
-        android:background="@drawable/item_background" 
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content">
+    android:layout_height="wrap_content"
+    android:gravity="center"
+    android:layout_gravity="center"
+    android:baselineAligned="false"
+    android:id="@+id/linear_bg"
+    android:background="@drawable/item_background">
         <LinearLayout
             android:gravity="center"
             android:layout_gravity="center"
@@ -31,7 +29,7 @@
                 android:focusable="false"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:text="M" />
+                android:text="@string/method_index_letter" />
         </LinearLayout>
         <LinearLayout
             android:gravity="center_vertical"
@@ -53,7 +51,7 @@
                 android:focusable="false"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="TextView"
+                tools:text="TextView"
                 android:maxLines="1" />
             <TextView
                 android:textSize="11sp"
@@ -64,8 +62,7 @@
                 android:focusable="false"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="(Landroid/content/res/AssetFileDescriptor;)V"
+                tools:text="(Landroid/content/res/AssetFileDescriptor;)V"
                 android:maxLines="5" />
         </LinearLayout>
-    </LinearLayout>
 </LinearLayout>

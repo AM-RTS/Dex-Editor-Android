@@ -35,6 +35,12 @@ jobs:
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --continue
 
+      - name: Run Android Lint
+        run: ./gradlew lintDebug
+
+      - name: Run Android smoke test
+        run: ./gradlew pixel2api35DebugAndroidTest -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+
       - name: Build APKs
         run: ./gradlew assembleDebug assembleRelease --stacktrace
 

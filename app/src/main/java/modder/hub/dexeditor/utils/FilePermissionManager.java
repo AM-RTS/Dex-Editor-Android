@@ -57,7 +57,6 @@ public class FilePermissionManager {
     */
 
     public static final int REQUEST_STORAGE_PERMISSION = 1001;
-    private static boolean showingDialog = false;
 
     public interface PermissionCallback {
         void onPermissionGranted();
@@ -72,14 +71,10 @@ public class FilePermissionManager {
             callback.onPermissionGranted();
             return;
         }
-        if (showingDialog) {
-            return;
-        }
-        showingDialog = true;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            showManageAllFilesDialog(activity, storageLauncher, callback);
+            showManageAllFilesDialog(activity, storageLauncher);
         } else {
-            showLegacyPermissionDialog(activity, permissionLauncher, callback);
+            showLegacyPermissionDialog(activity, permissionLauncher);
         }
     }
 
@@ -93,8 +88,7 @@ public class FilePermissionManager {
     }
 
     private static void showLegacyPermissionDialog(final MainActivity activity, 
-                                                 final ActivityResultLauncher<String[]> permissionLauncher, 
-                                                 final PermissionCallback callback) {
+                                                 final ActivityResultLauncher<String[]> permissionLauncher) {
         new MaterialAlertDialogBuilder(activity)
                 .setTitle("Storage Permission Required")
                 .setMessage("This app needs access to your storage to function properly.")
@@ -106,29 +100,24 @@ public class FilePermissionManager {
                                 Manifest.permission.READ_EXTERNAL_STORAGE,
                                 Manifest.permission.WRITE_EXTERNAL_STORAGE
                         });
-                        showingDialog = false;
                     }
                 })
                 .setNegativeButton("Exit", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        showingDialog = false;
-                        callback.onPermissionDenied();
                         activity.finish();
                     }
                 })
                 .setOnDismissListener(new DialogInterface.OnDismissListener() {
                     @Override
                     public void onDismiss(DialogInterface dialog) {
-                        showingDialog = false;
                     }
                 })
                 .show();
     }
 
     private static void showManageAllFilesDialog(final MainActivity activity, 
-                                               final ActivityResultLauncher<Intent> storageLauncher, 
-                                               final PermissionCallback callback) {
+                                               final ActivityResultLauncher<Intent> storageLauncher) {
         new MaterialAlertDialogBuilder(activity)
                 .setTitle(R.string.full_storage_access_required)
                 .setMessage(R.string.manage_all_files_msg)
@@ -146,21 +135,17 @@ public class FilePermissionManager {
                             intent.setData(Uri.parse("package:" + activity.getPackageName()));
                             storageLauncher.launch(intent);
                         }
-                        showingDialog = false;
                     }
                 })
                 .setNegativeButton(R.string.exit, new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        showingDialog = false;
-                        callback.onPermissionDenied();
                         activity.finish();
                     }
                 })
                 .setOnDismissListener(new DialogInterface.OnDismissListener() {
                     @Override
                     public void onDismiss(DialogInterface dialog) {
-                        showingDialog = false;
                     }
                 })
                 .show();

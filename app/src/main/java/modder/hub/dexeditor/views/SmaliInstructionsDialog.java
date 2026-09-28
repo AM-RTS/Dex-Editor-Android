@@ -55,6 +55,7 @@ import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import modder.hub.dexeditor.R;
 
 public class SmaliInstructionsDialog {
@@ -121,12 +122,12 @@ public class SmaliInstructionsDialog {
 			return;
 		}
 		List<InstructionItem> filteredList = new ArrayList<>();
-		String searchQuery = query.toLowerCase();
+		String searchQuery = query.toLowerCase(Locale.ROOT);
 		for (InstructionItem item : originalItems) {
-			boolean headerMatches = item.header.toLowerCase().contains(searchQuery);
+			boolean headerMatches = item.header.toLowerCase(Locale.ROOT).contains(searchQuery);
 			List<String> matchingContent = new ArrayList<>();
 			for (String line : item.content) {
-				if (line.toLowerCase().contains(searchQuery)) matchingContent.add(line);
+				if (line.toLowerCase(Locale.ROOT).contains(searchQuery)) matchingContent.add(line);
 			}
 			if (headerMatches || !matchingContent.isEmpty()) {
 				filteredList.add(new InstructionItem(item.header, matchingContent.isEmpty() ? item.content : matchingContent));
@@ -198,7 +199,7 @@ public class SmaliInstructionsDialog {
 
 		private SpannableString getHighlightedText(String text, String query) {
 			SpannableString spannable = new SpannableString(text);
-			String textLower = text.toLowerCase(), queryLower = query.toLowerCase();
+			String textLower = text.toLowerCase(Locale.ROOT), queryLower = query.toLowerCase(Locale.ROOT);
 			int index = textLower.indexOf(queryLower);
 			while (index >= 0) {
 				spannable.setSpan(new StyleSpan(Typeface.BOLD), index, index + query.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);

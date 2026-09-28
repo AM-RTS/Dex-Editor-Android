@@ -188,9 +188,9 @@ public class SmaliMethodInvokeParser {
 			
 			// Parse parameters
 			String params = matcher.group("params");
-            if (params != null && !params.isEmpty()) {
-                info.parameterTypes = parseParameterTypes(params);
-            }
+			if (params != null && !params.isEmpty()) {
+				info.parameterTypes = parseParameterTypes(params);
+			}
 
             // Parse return type
 			info.returnType = matcher.group("return");

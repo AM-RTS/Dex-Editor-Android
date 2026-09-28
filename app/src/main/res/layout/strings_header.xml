@@ -29,7 +29,7 @@
             android:textColor="?attr/colorOnSurface"
             app:iconTint="?attr/colorOnSurface"
             app:icon="@drawable/filter_alt_24px"
-            android:text="Filter"
+        android:text="@string/filter"
             android:textSize="13sp" />
 
         <com.google.android.material.button.MaterialButton
@@ -52,7 +52,7 @@
             android:layout_weight="1"
             android:gravity="start"
             android:background="?attr/selectableItemBackground"
-            android:text="Apply changes"
+        android:text="@string/apply_changes"
             android:textSize="13sp"
             android:textStyle="bold"
             android:textColor="?attr/colorOnSurface"

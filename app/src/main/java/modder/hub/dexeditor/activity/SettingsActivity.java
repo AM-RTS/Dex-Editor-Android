@@ -47,6 +47,7 @@ import java.util.Objects;
 
 import modder.hub.dexeditor.R;
 import modder.hub.dexeditor.fragment.SettingsFragment;
+import modder.hub.dexeditor.utils.EdgeToEdge;
 
 /*
 Author @developer-krushna
@@ -58,6 +59,7 @@ public class SettingsActivity extends AppCompatActivity {
 	protected void onCreate(Bundle _savedInstanceState) {
 		super.onCreate(_savedInstanceState);
 		setContentView(R.layout.settings);
+		EdgeToEdge.apply(this);
 		initialize(_savedInstanceState);
 		initializeLogic();
 	}
@@ -70,7 +72,7 @@ public class SettingsActivity extends AppCompatActivity {
 		_toolbar.setNavigationOnClickListener(new View.OnClickListener() {
 			@Override
 			public void onClick(View _v) {
-				onBackPressed();
+				getOnBackPressedDispatcher().onBackPressed();
 			}
 		});
 	}

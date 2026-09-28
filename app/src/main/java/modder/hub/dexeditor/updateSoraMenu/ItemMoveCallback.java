@@ -77,7 +77,10 @@ public class ItemMoveCallback extends ItemTouchHelper.Callback {
 	@Override
 	public boolean onMove(RecyclerView recyclerView, RecyclerView.ViewHolder viewHolder,
 	RecyclerView.ViewHolder target) {
-		mAdapter.onRowMoved(viewHolder.getAdapterPosition(), target.getAdapterPosition());
+		int fromPosition = viewHolder.getBindingAdapterPosition();
+		int toPosition = target.getBindingAdapterPosition();
+		if (fromPosition == RecyclerView.NO_POSITION || toPosition == RecyclerView.NO_POSITION) return false;
+		mAdapter.onRowMoved(fromPosition, toPosition);
 		return true;
 	}
 	

@@ -4,6 +4,8 @@ import io.github.rosemoe.sora.text.Content;
 import io.github.rosemoe.sora.text.Cursor;
 import io.github.rosemoe.sora.widget.CodeEditor;
 
+import java.util.Locale;
+
 /**
  * EditorHelper: Shared logic for CodeEditor operations like line manipulation, indentation, etc.
  * Refactored to keep DexEditorActivity clean.
@@ -50,7 +52,7 @@ public class EditorHelper {
             int start = editor.getCursor().getLeft();
             int end = editor.getCursor().getRight();
             String selectedText = editor.getText().substring(start, end);
-            editor.getText().replace(start, end, toUpper ? selectedText.toUpperCase() : selectedText.toLowerCase());
+            editor.getText().replace(start, end, toUpper ? selectedText.toUpperCase(Locale.getDefault()) : selectedText.toLowerCase(Locale.getDefault()));
         }
     }
 

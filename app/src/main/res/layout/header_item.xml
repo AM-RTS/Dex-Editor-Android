@@ -33,6 +33,7 @@
             android:id="@+id/header_menu"
             android:layout_width="24dp"
             android:layout_height="24dp"
+            android:contentDescription="@string/more_options"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_more_mt"
             android:visibility="visible"

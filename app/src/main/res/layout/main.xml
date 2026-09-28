@@ -41,9 +41,11 @@
                 android:id="@+id/edit_path"
                 android:padding="8dp"
                 android:focusable="true"
+                android:importantForAutofill="no"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="Enter dex path"
+                android:inputType="text"
+        android:hint="@string/enter_dex_path"
                 android:imeOptions="actionDone" />
         </com.google.android.material.textfield.TextInputLayout>
         <com.google.android.material.button.MaterialButton
@@ -57,7 +59,7 @@
             android:padding="8dp"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Pick .dex file"
+        android:text="@string/pick_dex_file"
             app:backgroundTint="@color/colorPrimary"
             app:cornerRadius="8dp"
             style="@style/Widget.MaterialComponents.Button" />
@@ -72,7 +74,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_margin="20dp"
-            android:text="Open Dex Editor"
+        android:text="@string/open_dex_editor"
             app:backgroundTint="@color/colorPrimary"
             app:cornerRadius="8dp"
             style="@style/Widget.MaterialComponents.Button" />
@@ -86,6 +88,6 @@
             android:padding="8dp"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="View Source Codes on GitHub" />
+        android:text="@string/view_source_codes_github" />
     </LinearLayout>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

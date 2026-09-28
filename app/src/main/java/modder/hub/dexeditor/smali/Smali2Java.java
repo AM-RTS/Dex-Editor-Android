@@ -39,7 +39,6 @@ package modder.hub.dexeditor.smali;
 
 import com.android.tools.smali.dexlib2.Opcodes;
 import com.android.tools.smali.dexlib2.iface.ClassDef;
-import com.android.tools.smali.dexlib2.writer.builder.DexBuilder;
 import com.android.tools.smali.dexlib2.writer.io.FileDataStore;
 import com.android.tools.smali.dexlib2.writer.pool.DexPool;
 import com.android.tools.smali.smali.SmaliOptions;
@@ -61,26 +60,29 @@ public class Smali2Java {
     public static String translate(String smali, int version) throws Exception {
         File tmp = File.createTempFile("test", ".dex");
         try {
-            DexBuilder dexBuilder = new DexBuilder(Opcodes.forDexVersion(version));
-            dexBuilder.setIgnoreMethodAndFieldError(true);
-
             ClassDef classDef = Smali.assemble(smali, new SmaliOptions(), version);
 
-            DexPool pool = new DexPool(Opcodes.getDefault());
+            DexPool pool = new DexPool(Opcodes.forDexVersion(version));
             pool.internClass(classDef);
-            pool.writeTo(new FileDataStore(tmp));
+            FileDataStore store = new FileDataStore(tmp);
+            try {
+                pool.writeTo(store);
+            } finally {
+                store.close();
+            }
             JadxArgs args = new JadxArgs();
             args.setSkipResources(true);
             args.setShowInconsistentCode(true);
             args.setInputFiles(ImmutableList.of(tmp));
-            JadxDecompiler decompiler = new JadxDecompiler(args);
-            decompiler.load();
-            if (decompiler.getClasses().isEmpty()) {
-                return "// No classes found in decompiled DEX";
+            try (JadxDecompiler decompiler = new JadxDecompiler(args)) {
+                decompiler.load();
+                if (decompiler.getClasses().isEmpty()) {
+                    return "// No classes found in decompiled DEX";
+                }
+                JavaClass jcls = decompiler.getClasses().iterator().next();
+                jcls.decompile();
+                return jcls.getCode();
             }
-            JavaClass jcls = decompiler.getClasses().iterator().next();
-            jcls.decompile();
-            return jcls.getCode();
         } finally {
             tmp.delete();
         }

@@ -10,8 +10,11 @@
         app:showAsAction="always"
         android:icon="@drawable/ic_more_mt"
         android:id="@+id/more_menu"
-        android:title="More">
+        android:title="@string/menu_more">
         <menu>
+            <item
+                android:id="@+id/action_apply_patch"
+        android:title="@string/apply_patch_file" />
             <item
                 android:id="@+id/action_preferences"
                 android:title="@string/preferences"

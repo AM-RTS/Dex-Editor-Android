@@ -31,6 +31,8 @@
 
 package modder.hub.dexeditor.fragment;
 
+import modder.hub.dexeditor.model.EditorTab;
+
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
@@ -67,9 +69,9 @@ import org.eclipse.tm4e.core.registry.IThemeSource;
 
 import java.io.BufferedWriter;
 import java.io.FileWriter;
-import java.io.InputStreamReader;
 import java.lang.ref.WeakReference;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 import io.github.rosemoe.sora.event.ContentChangeEvent;
@@ -80,7 +82,9 @@ import io.github.rosemoe.sora.langs.java.JavaLanguage;
 import io.github.rosemoe.sora.langs.textmate.TextMateColorScheme;
 import io.github.rosemoe.sora.langs.textmate.TextMateLanguage;
 import io.github.rosemoe.sora.langs.textmate.registry.FileProviderRegistry;
+import io.github.rosemoe.sora.langs.textmate.registry.GrammarRegistry;
 import io.github.rosemoe.sora.langs.textmate.registry.ThemeRegistry;
+import io.github.rosemoe.sora.langs.textmate.registry.model.DefaultGrammarDefinition;
 import io.github.rosemoe.sora.langs.textmate.registry.provider.AssetsFileResolver;
 import io.github.rosemoe.sora.text.Content;
 import io.github.rosemoe.sora.text.Cursor;
@@ -96,6 +100,7 @@ import modder.hub.dexeditor.utils.Notify_MT;
 import modder.hub.dexeditor.utils.SketchwareUtil;
 import modder.hub.dexeditor.smali.SmaliCursorUtils;
 import modder.hub.dexeditor.utils.EditorPositionManager;
+import modder.hub.dexeditor.utils.ClassTree;
 import modder.hub.dexeditor.smali.SmaliHelper;
 import modder.hub.dexeditor.utils.UIHelper;
 import modder.hub.dexeditor.views.TextActionWindow;
@@ -131,11 +136,15 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
     private boolean isClosing = false;
     private boolean isReload = false;
     private boolean isInitializing = true;
+    private boolean smaliContentReady;
     private String tempSmaliPath;
+    private volatile Thread smaliLoadThread;
+    private volatile ExtractMethodFieldInfoTask methodInfoTask;
 
     private SmaliCursorUtils.MethodInfo currentMethodInfo;
 
     private static boolean tmRegistered = false;
+    private static final int MAX_NAVIGATION_RETRIES = 10;
 
     public static final String[] SYMBOLS = new String[] {
             "->", "{", "}", "(", ")",
@@ -193,11 +202,23 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
     }
 
     @Override
+    public void onDestroyView() {
+        smaliContentReady = false;
+        Thread worker = smaliLoadThread;
+        smaliLoadThread = null;
+        if (worker != null) worker.interrupt();
+        ExtractMethodFieldInfoTask locateTask = methodInfoTask;
+        methodInfoTask = null;
+        if (locateTask != null) locateTask.cancel();
+        super.onDestroyView();
+    }
+
+    @Override
     public void onResume() {
         super.onResume();
         Activity activity = getActivity();
         if (activity instanceof DexEditorActivity) {
-            DexEditorActivity.EditorTab tab = ((DexEditorActivity) activity).getTabForClassName(className);
+            EditorTab tab = ((DexEditorActivity) activity).getTabForClassName(className, type);
             if (tab != null && smaliEditor != null) {
                 if (type == 1) { // Java
                     smaliEditor.setEditable(false); // set false
@@ -211,6 +232,7 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
     // Initializing views and setting up listeners for the editor interface
     private void initViews(View view) {
         smaliEditor = view.findViewById(R.id.smali_editor);
+        smaliContentReady = false;
         loadingProgress = view.findViewById(R.id.loading_progress);
         TextView textviewLeft = view.findViewById(R.id.textview_left);
         textviewLineNo = view.findViewById(R.id.textview_lineNo);
@@ -309,6 +331,8 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
                 if (initialContentText != null) {
                     smaliEditor.setText(initialContentText);
                     postInitialize(false);
+                    smaliContentReady = true;
+                    runPendingMethodNavigation();
                 } else {
                     loadSmaliInBackground();
                 }
@@ -373,37 +397,44 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
     // loading the smali code in the editor fragment
     private void loadSmaliInBackground() {
         if (loadingProgress != null) loadingProgress.setVisibility(View.VISIBLE);
+        Activity host = getActivity();
+        if (!(host instanceof DexEditorActivity)) return;
+        final DexEditorActivity dexActivity = (DexEditorActivity) host;
+        final ClassTree tree = dexActivity.getClassTree();
+        if (tree == null) return;
 
-        new Thread(new Runnable() {
+        Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    Activity activity = getActivity();
-                    if (activity instanceof DexEditorActivity) {
-                        final DexEditorActivity dexActivity = (DexEditorActivity) activity;
-                        final String smaliCode = DexEditorActivity.classTree.getSmaliByType(Objects.requireNonNull(DexEditorActivity.classTree.classMap.get(className)));
+                    if (Thread.currentThread().isInterrupted()) return;
+                    final String smaliCode = tree.getSmaliByType(Objects.requireNonNull(tree.getClassDef(className)));
+                        if (Thread.currentThread().isInterrupted()) return;
 
                         runOnUiThread(new Runnable() {
                             @Override
                             public void run() {
+                                if (!isAdded() || getView() == null || smaliEditor == null) return;
                                 if (loadingProgress != null) loadingProgress.setVisibility(View.GONE);
                                 
+                                final EditorTab tab = dexActivity.getTabForClassName(className, type);
+                                if (tab != null) {
+                                    tab.markCommitted(smaliCode);
+                                }
                                 initialContentText = smaliCode;
                                 smaliEditor.setText(smaliCode);
-
-                                final DexEditorActivity.EditorTab tab = dexActivity.getTabForClassName(className);
-                                if (tab != null) {
-                                    tab.content = smaliCode;
-                                }
+                                smaliContentReady = true;
                                 boolean hasPending = tab != null && tab.pendingLine != -1;
 
                                 postInitialize(hasPending);
+                                runPendingMethodNavigation();
 
                                 // Handle pending navigation
                                 if (hasPending) {
                                     new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                                         @Override
                                         public void run() {
+                                            if (!isAdded() || getView() == null || smaliEditor == null) return;
                                             smaliEditor.requestFocus();
                                             navigateTo(tab.pendingLine, tab.pendingColumn, tab.pendingQuery);
                                             tab.pendingLine = -1;
@@ -414,24 +445,26 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
                                 }
                             }
                         });
-                    }
                 } catch (final Exception e) {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
+                            if (!isAdded() || getView() == null) return;
                             if (loadingProgress != null) loadingProgress.setVisibility(View.GONE);
                             Notify_MT.Notify(getContext(), getString(R.string.error), e.toString(), getString(R.string.close));
                         }
                     });
                 }
             }
-        }).start();
+        }, "dex-editor-smali-load");
+        smaliLoadThread = worker;
+        worker.start();
     }
 
     private void postInitialize(boolean skipRestorePosition) {
         Activity activity = getActivity();
         if (activity instanceof DexEditorActivity) {
-            DexEditorActivity.EditorTab tab = ((DexEditorActivity) activity).getTabForClassName(className);
+            EditorTab tab = ((DexEditorActivity) activity).getTabForClassName(className, type);
             if (tab != null) {
                 if (type == 1) { // Java
                     smaliEditor.setEditable(false);
@@ -497,11 +530,13 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
             }
 
             try {
-                cachedSmaliLanguage = TextMateLanguage.create(
-                        IGrammarSource.fromInputStream(context.getAssets().open("smali/syntaxes/smali.tmLanguage.json"), "smali.tmLanguage.json", null),
-                        new InputStreamReader(context.getAssets().open("smali/language-configuration.json")),
-                        themeSource
-                );
+                IGrammarSource grammarSource = IGrammarSource.fromInputStream(
+                        context.getAssets().open("smali/syntaxes/smali.tmLanguage.json"),
+                        "smali.tmLanguage.json", null);
+                GrammarRegistry grammarRegistry = GrammarRegistry.getInstance();
+                grammarRegistry.loadGrammar(DefaultGrammarDefinition.withLanguageConfiguration(
+                        grammarSource, "smali/language-configuration.json", "smali", "source.smali"));
+                cachedSmaliLanguage = TextMateLanguage.create("source.smali", grammarRegistry, registry, true);
             } catch (Exception e) {
                 Log.e("EditorFragment", "Smali language load error", e);
             }
@@ -639,14 +674,21 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
     }
 
     public void navigateTo(final int lineNum, final int column, final String query) {
-        if (smaliEditor == null) return;
+        navigateTo(lineNum, column, query, 0);
+    }
+
+    private void navigateTo(final int lineNum, final int column, final String query, final int retryCount) {
+        if (smaliEditor == null || getView() == null) return;
 
         // If text is not loaded yet or line count is low, retry after a short delay
         if (smaliEditor.getText().getLineCount() <= lineNum) {
+            if (retryCount >= MAX_NAVIGATION_RETRIES) return;
             new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    navigateTo(lineNum, column, query);
+                    if (isAdded() && getView() != null && smaliEditor != null) {
+                        navigateTo(lineNum, column, query, retryCount + 1);
+                    }
                 }
             }, 100);
             return;
@@ -663,7 +705,7 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
                 String getLineText = smaliEditor.getText().getLineString(lineNum);
 
                 if (query != null && !query.isEmpty() && !query.contains("\n")) {
-                    int start = getLineText.toLowerCase().indexOf(query.toLowerCase());
+                    int start = getLineText.toLowerCase(Locale.ROOT).indexOf(query.toLowerCase(Locale.ROOT));
                     if (start != -1) {
                         smaliEditor.setSelectionRegion(lineNum, start, lineNum, start + query.length());
                         dismissEditorWindow(smaliEditor);
@@ -857,7 +899,30 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
     }
 
     public void extractMethodFieldInfo(final String target) {
-        new ExtractMethodFieldInfoTask(this, target).execute();
+        ExtractMethodFieldInfoTask oldTask = methodInfoTask;
+        if (oldTask != null) oldTask.cancel();
+        methodInfoTask = new ExtractMethodFieldInfoTask(this, target);
+        methodInfoTask.execute();
+    }
+
+    public void openMethodWhenReady(String methodName) {
+        Activity host = getActivity();
+        if (!(host instanceof DexEditorActivity)) return;
+        EditorTab tab = ((DexEditorActivity) host).getTabForClassName(className, type);
+        if (tab == null) return;
+        tab.pendingMethodName = methodName;
+        if (smaliContentReady) runPendingMethodNavigation();
+    }
+
+    private void runPendingMethodNavigation() {
+        Activity host = getActivity();
+        if (!smaliContentReady || smaliEditor == null || !(host instanceof DexEditorActivity)) return;
+        EditorTab tab = ((DexEditorActivity) host).getTabForClassName(className, type);
+        if (tab == null || tab.pendingMethodName == null) return;
+        String methodName = tab.pendingMethodName;
+        tab.pendingMethodName = null;
+        smaliEditor.requestFocus();
+        extractMethodFieldInfo(methodName);
     }
 
     // this method is really facinating thing
@@ -868,6 +933,8 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
         private final String target;
         private final Content text;
         private final Handler mainHandler = new Handler(Looper.getMainLooper());
+        private volatile boolean cancelled;
+        private Thread worker;
 
         ExtractMethodFieldInfoTask(EditorFragment fragment, String target) {
             this.fragmentRef = new WeakReference<>(fragment);
@@ -876,18 +943,31 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
         }
 
         void execute() {
-            new Thread(new Runnable() {
+            EditorFragment fragment = fragmentRef.get();
+            if (fragment == null || text == null) return;
+            worker = new Thread(new Runnable() {
                 @Override
                 public void run() {
+                    if (cancelled || Thread.currentThread().isInterrupted()) return;
                     final TextLocation location = doInBackground();
+                    if (cancelled || Thread.currentThread().isInterrupted()) return;
                     mainHandler.post(new Runnable() {
                         @Override
                         public void run() {
+                            EditorFragment current = fragmentRef.get();
+                            if (cancelled || current == null || current.methodInfoTask != ExtractMethodFieldInfoTask.this) return;
+                            current.methodInfoTask = null;
                             onPostExecute(location);
                         }
                     });
                 }
-            }).start();
+            }, "dex-editor-method-field-locate");
+            worker.start();
+        }
+
+        void cancel() {
+            cancelled = true;
+            if (worker != null) worker.interrupt();
         }
 
         protected TextLocation doInBackground() {
@@ -904,12 +984,15 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
 
         protected void onPostExecute(TextLocation location) {
             EditorFragment fragment = fragmentRef.get();
-            if (fragment != null && fragment.isAdded() && location != null) {
+            if (fragment != null && fragment.isAdded() && fragment.getView() != null
+                    && fragment.smaliEditor != null && location != null) {
                 int lineNumber = location.lineNumber - 1;
                 fragment.smaliEditor.jumpToLine(lineNumber); // fisrt jump to line number
                 mainHandler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
+                        if (!fragment.isAdded() || fragment.getView() == null
+                                || fragment.smaliEditor == null) return;
                         try {
                             fragment.smaliEditor.setSelectionRegion(lineNumber, location.startColumn, lineNumber, location.endColumn); // then select the text according to the line & colum(start, end)
                             dismissEditorWindow(fragment.smaliEditor); // dismiss the selection window
@@ -938,6 +1021,7 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
     // @Content is the total text , method name (extracted from the selcted line text)
     private static TextLocation findMethodLocation(Content text, String methodName) {
         for (int i = 0; i < text.getLineCount(); i++) {
+            if (Thread.currentThread().isInterrupted()) return null;
             String line = text.getLineString(i);
             String trimmedLine = line.trim();
             if (!trimmedLine.isEmpty()) {
@@ -955,6 +1039,7 @@ public class EditorFragment extends Fragment implements SmaliMethodFieldListFrag
     // get field location, The line starts with field and contains ':'
     private static TextLocation findFieldLocation(Content text, String fieldName) {
         for (int i = 0; i < text.getLineCount(); i++) {
+            if (Thread.currentThread().isInterrupted()) return null;
             String line = text.getLineString(i);
             if (line.trim().startsWith(".field") && line.contains(fieldName)) {
                 int startIndex = line.indexOf(fieldName);

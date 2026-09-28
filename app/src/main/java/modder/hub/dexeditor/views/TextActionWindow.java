@@ -290,7 +290,7 @@ public class TextActionWindow extends EditorTextActionWindow implements View.OnL
 		// Define all possible buttons with their resources
 		Map<String, ButtonConfig> allButtons = new HashMap<>();
 		allButtons.put("panel_btn_select_all", new ButtonConfig(R.drawable.ic_selectall_mt, R.string.select_all));
-		allButtons.put("panel_btn_copy", new ButtonConfig(R.drawable.ic_copy_mt, R.string.copy));
+		allButtons.put("panel_btn_copy", new ButtonConfig(R.drawable.ic_copy_mt, R.string.text_action_copy));
 		allButtons.put("panel_btn_paste", new ButtonConfig(R.drawable.ic_paste_mt, R.string.paste));
 		allButtons.put("goto_btn", new ButtonConfig(R.drawable.ic_goto_mt, R.string.go_to));
 		allButtons.put("translate_btn", new ButtonConfig(R.drawable.ic_translate_mt, R.string.translate));
@@ -855,14 +855,14 @@ public class TextActionWindow extends EditorTextActionWindow implements View.OnL
 		}
 		
 		if (domainPattern.matcher(text).matches()) {
-			String tld = text.substring(text.lastIndexOf('.') + 1).toLowerCase();
+			String tld = text.substring(text.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT);
 			return VALID_TLDS.contains(tld);
 		}
 		
-		if (text.toLowerCase().startsWith("www.")) {
+		if (text.toLowerCase(Locale.ROOT).startsWith("www.")) {
 			String rest = text.substring(4);
 			if (domainPattern.matcher(rest).matches()) {
-				String tld = rest.substring(rest.lastIndexOf('.') + 1).toLowerCase();
+			String tld = rest.substring(rest.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT);
 				return VALID_TLDS.contains(tld);
 			}
 		}
@@ -876,13 +876,13 @@ public class TextActionWindow extends EditorTextActionWindow implements View.OnL
 		}
 		
 		// If already starts with http:// or https://
-		if (text.toLowerCase().startsWith("http://") || 
-		text.toLowerCase().startsWith("https://")) {
+		if (text.toLowerCase(Locale.ROOT).startsWith("http://") || 
+		text.toLowerCase(Locale.ROOT).startsWith("https://")) {
 			return text;
 		}
 		
 		// If starts with www.
-		if (text.toLowerCase().startsWith("www.")) {
+		if (text.toLowerCase(Locale.ROOT).startsWith("www.")) {
 			return "http://" + text;
 		}
 		

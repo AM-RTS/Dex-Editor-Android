@@ -80,10 +80,14 @@ public class DexFileSelector {
 	}
 	
 	private void loadDexFiles(File initialDexFile) {
+		if (folder == null) {
+			dexFiles.add(initialDexFile.getAbsolutePath());
+			return;
+		}
 		if (folder.exists() && folder.isDirectory()) {
 			File[] files = folder.listFiles(new java.io.FileFilter() {
 				public boolean accept(File file) {
-					return file.getName().endsWith(".dex");
+					return file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(".dex");
 				}
 			});
 			
@@ -111,8 +115,8 @@ public class DexFileSelector {
 		if (dexFiles.size() == 1) {
 			if (listener != null) {
 				List<String> singleFileList;
-                singleFileList = new ArrayList<String>();
-                singleFileList.add(dexFiles.get(0));
+				singleFileList = new ArrayList<String>();
+				singleFileList.add(dexFiles.get(0));
 				listener.onFilesSelected(singleFileList);
 			}
 			return;

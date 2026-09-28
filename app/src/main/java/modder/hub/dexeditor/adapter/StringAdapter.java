@@ -37,12 +37,18 @@ import android.view.ViewGroup;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
 
 import modder.hub.dexeditor.R;
 
@@ -118,17 +124,30 @@ public class StringAdapter extends RecyclerView.Adapter<StringAdapter.ViewHolder
     }
 
     private void applyFilter(String query) {
+        List<String> oldDisplayed = new ArrayList<>(displayedStrings);
+        List<String> newDisplayed;
         if (query == null) {
-            displayedStrings = allStrings;
+            newDisplayed = allStrings;
         } else {
-            String lower = query.toLowerCase();
+            String lower = query.toLowerCase(Locale.ROOT);
             List<String> filtered = new ArrayList<>();
             for (String s : allStrings) {
-                if (s != null && s.toLowerCase().contains(lower)) filtered.add(s);
+                if (s != null && s.toLowerCase(Locale.ROOT).contains(lower)) filtered.add(s);
             }
-            displayedStrings = filtered;
+            newDisplayed = filtered;
         }
-        notifyDataSetChanged();
+        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+            @Override public int getOldListSize() { return oldDisplayed.size(); }
+            @Override public int getNewListSize() { return newDisplayed.size(); }
+            @Override public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                return Objects.equals(oldDisplayed.get(oldItemPosition), newDisplayed.get(newItemPosition));
+            }
+            @Override public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                return areItemsTheSame(oldItemPosition, newItemPosition);
+            }
+        });
+        displayedStrings = newDisplayed;
+        diff.dispatchUpdatesTo(this);
     }
 
     public void markModified(String original, String newValue) {
@@ -137,7 +156,7 @@ public class StringAdapter extends RecyclerView.Adapter<StringAdapter.ViewHolder
         } else {
             modifiedStrings.put(original, newValue);
         }
-        notifyDataSetChanged();
+        notifyModifiedItems(Collections.singleton(original));
     }
 
     public String getPendingValue(String original) {
@@ -154,8 +173,15 @@ public class StringAdapter extends RecyclerView.Adapter<StringAdapter.ViewHolder
     }
 
     public void clearModifications() {
+        Set<String> changed = new HashSet<>(modifiedStrings.keySet());
         modifiedStrings.clear();
-        notifyDataSetChanged();
+        notifyModifiedItems(changed);
+    }
+
+    private void notifyModifiedItems(Set<String> originals) {
+        for (int i = 0; i < displayedStrings.size(); i++) {
+            if (originals.contains(displayedStrings.get(i))) notifyItemChanged(i);
+        }
     }
 
     static class ViewHolder extends RecyclerView.ViewHolder {

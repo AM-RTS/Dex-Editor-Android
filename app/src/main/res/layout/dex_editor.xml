@@ -72,7 +72,7 @@
             android:layout_height="wrap_content"
             android:layout_margin="16dp"
             android:layout_gravity="right|bottom"
-            android:contentDescription="Delete fab"
+        android:contentDescription="@string/delete_fab"
             app:srcCompat="@drawable/ic_delete" />
 
     </androidx.coordinatorlayout.widget.CoordinatorLayout>

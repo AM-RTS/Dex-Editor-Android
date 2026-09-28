@@ -40,13 +40,12 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.view.LayoutInflater;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CompoundButton;
 import android.widget.ImageView;
 import android.widget.RelativeLayout;
-import android.widget.Switch;
+import androidx.appcompat.widget.SwitchCompat;
 import android.widget.TextView;
 
 import androidx.recyclerview.widget.RecyclerView;
@@ -92,7 +91,7 @@ public class RecyclerViewAdapter extends RecyclerView.Adapter<RecyclerViewAdapte
 		View rowView;
 		ImageView imageView;
 		RelativeLayout relativeLayout;
-		Switch disableSwitch;
+		SwitchCompat disableSwitch;
 		
 		public MyViewHolder(View itemView) {
 			super(itemView);
@@ -141,14 +140,10 @@ public class RecyclerViewAdapter extends RecyclerView.Adapter<RecyclerViewAdapte
 		});
 		
 		// Drag handling
-		holder.imageView.setOnTouchListener(new View.OnTouchListener() {
-			@Override
-			public boolean onTouch(View v, MotionEvent event) {
-				if (event.getAction() == MotionEvent.ACTION_DOWN) {
-					mStartDragListener.requestDrag(holder);
-				}
-				return false;
-			}
+		holder.imageView.setContentDescription(context.getString(R.string.reorder_menu_item));
+		holder.imageView.setOnLongClickListener(v -> {
+			mStartDragListener.requestDrag(holder);
+			return true;
 		});
 	}
 	

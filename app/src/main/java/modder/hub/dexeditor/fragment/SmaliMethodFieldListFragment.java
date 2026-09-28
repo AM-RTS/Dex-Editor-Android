@@ -36,6 +36,8 @@
 
 package modder.hub.dexeditor.fragment;
 
+import modder.hub.dexeditor.model.EditorTab;
+
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Dialog;
@@ -48,12 +50,10 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
-import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Parcelable;
-import android.util.DisplayMetrics;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -75,13 +75,15 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
-import java.io.BufferedReader;
-import java.io.FileReader;
+import java.io.File;
+import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Locale;
 
 import modder.hub.dexeditor.GraphDot.DrawFlowDiagram;
 import modder.hub.dexeditor.GraphDot.Method;
@@ -94,6 +96,7 @@ import modder.hub.dexeditor.smali.SmaliMethodBody;
 import modder.hub.dexeditor.smali.SmaliMethodInvokeParser;
 import modder.hub.dexeditor.utils.Notify_MT;
 import modder.hub.dexeditor.utils.SketchwareUtil;
+import modder.hub.dexeditor.utils.SmaliNavigationParser;
 import modder.hub.dexeditor.smali.SmaliHelper;
 import modder.hub.dexeditor.utils.UIHelper;
 import modder.hub.dexeditor.utils.ViewAnimationHelper;
@@ -119,9 +122,14 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
     private String searchQuery = "";
     private String smaliFilePath = "";
     private String className = "";
+    private LoadDataTask loadDataTask;
     private List<HashMap<String, Object>> methodOrFieldInfo = new ArrayList<>();
     private List<HashMap<String, Object>> stringListInfo = new ArrayList<>();
     private String fullClassName = "???";
+    private Parcelable methodRecyclerViewState;
+    private Parcelable stringsRecyclerViewState;
+    private boolean wasStringsVisible;
+
     private final String smaliCallSyntax = "->";
     private static Typeface monoTypeface;
 
@@ -256,11 +264,10 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
         Dialog dialog = getDialog();
         if (dialog != null) {
             // Get screen width
-            DisplayMetrics displayMetrics = new DisplayMetrics();
-            requireActivity().getWindowManager().getDefaultDisplay().getMetrics(displayMetrics);
+            int screenWidth = requireActivity().getResources().getDisplayMetrics().widthPixels;
 
             // Set fixed width (80% of screen width)
-            int dialogWidth = (int) (displayMetrics.widthPixels * 0.8);
+            int dialogWidth = (int) (screenWidth * 0.8);
 
             // Height will WRAP_CONTENT automatically
             Objects.requireNonNull(dialog.getWindow()).setLayout(dialogWidth, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -269,14 +276,20 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
     }
 
     private void saveCurrentState() {
+        if (methodRecyclerView == null || stringsRecyclerView == null) return;
         // Save RecyclerView scroll states
         if (methodRecyclerView.getLayoutManager() != null) {
-            DexEditorActivity.methodRecyclerViewState = methodRecyclerView.getLayoutManager().onSaveInstanceState();
+            methodRecyclerViewState = methodRecyclerView.getLayoutManager().onSaveInstanceState();
         }
         if (stringsRecyclerView.getLayoutManager() != null) {
-            DexEditorActivity.stringsRecyclerViewState = stringsRecyclerView.getLayoutManager().onSaveInstanceState();
+            stringsRecyclerViewState = stringsRecyclerView.getLayoutManager().onSaveInstanceState();
         }
-        DexEditorActivity.wasStringsVisible = stringsRecyclerView.getVisibility() == View.VISIBLE;
+        wasStringsVisible = stringsRecyclerView.getVisibility() == View.VISIBLE;
+        Activity activity = getActivity();
+        if (activity instanceof DexEditorActivity) {
+            ((DexEditorActivity) activity).saveNavigationState(
+                    methodRecyclerViewState, stringsRecyclerViewState, wasStringsVisible);
+        }
     }
 
     public void restorePreviousState(Parcelable methodState, Parcelable stringsState, boolean wasStringsVisible) {
@@ -305,13 +318,24 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
     }
 
     private void restoreRecyclerViewState() {
-        restorePreviousState(DexEditorActivity.methodRecyclerViewState, DexEditorActivity.stringsRecyclerViewState, DexEditorActivity.wasStringsVisible);
+        Activity activity = getActivity();
+        if (activity instanceof DexEditorActivity) {
+            DexEditorActivity editorActivity = (DexEditorActivity) activity;
+            methodRecyclerViewState = editorActivity.getNavigationMethodsState();
+            stringsRecyclerViewState = editorActivity.getNavigationStringsState();
+            wasStringsVisible = editorActivity.isNavigationShowingStrings();
+        }
+        restorePreviousState(methodRecyclerViewState, stringsRecyclerViewState, wasStringsVisible);
     }
 
     @Override
     public void onDestroyView() {
-        super.onDestroyView();
         saveCurrentState(); // Save state when dialog is dismissed
+        if (loadDataTask != null) {
+            loadDataTask.cancel();
+            loadDataTask = null;
+        }
+        super.onDestroyView();
     }
 
     @SuppressLint("NotifyDataSetChanged")
@@ -324,7 +348,7 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
             int currentIndex = mapNumber - 1;
             for (int i = 0; i < mapNumber; i++) {
                 String methodName = Objects.requireNonNull(methodOrFieldInfo.get(currentIndex).get("MethodOrFieldName")).toString();
-                if (!(_charSeq.length() > methodName.length()) && methodName.toLowerCase().contains(_charSeq.toLowerCase())) {
+                if (!(_charSeq.length() > methodName.length()) && methodName.toLowerCase(Locale.ROOT).contains(_charSeq.toLowerCase(Locale.ROOT))) {
 
                 } else {
                     methodOrFieldInfo.remove(currentIndex);
@@ -350,7 +374,7 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
             int currentIndex = mapNumber - 1;
             for (int i = 0; i < mapNumber; i++) {
                 String stringName = Objects.requireNonNull(stringListInfo.get(currentIndex).get("StringName")).toString();
-                if (!(_charSeq.length() > stringName.length()) && stringName.toLowerCase().contains(_charSeq.toLowerCase())) {
+                if (!(_charSeq.length() > stringName.length()) && stringName.toLowerCase(Locale.ROOT).contains(_charSeq.toLowerCase(Locale.ROOT))) {
 
                 } else {
                     stringListInfo.remove(currentIndex);
@@ -391,6 +415,8 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
     public void methodFlowChart(final String methodName) {
         final Activity activity = getActivity();
         if (activity == null || activity.isFinishing()) return;
+        final String sourcePath = smaliFilePath;
+        final String sourceClass = fullClassName;
 
         if (activity instanceof DexEditorActivity) {
             DexEditorActivity dexActivity = (DexEditorActivity) activity;
@@ -399,8 +425,9 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
             String subtitle = "(" + _getTextAfter(methodName, "(");
 
             // Check if tab already exists to avoid redundant generation
-            for (int i = 0; i < DexEditorActivity.tabs.size(); i++) {
-                DexEditorActivity.EditorTab tab = DexEditorActivity.tabs.get(i);
+            List<EditorTab> openTabs = dexActivity.getOpenTabsSnapshot();
+            for (int i = 0; i < openTabs.size(); i++) {
+                EditorTab tab = openTabs.get(i);
                 if (tab.className.equals(cleanedClassName) && tab.title.equals(title) &&
                     tab.subtitle != null && tab.subtitle.equals(subtitle) && tab.type == 2) {
                     dexActivity.showEditor(i);
@@ -415,7 +442,10 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
             @Override
             public void run() {
                 if (activity.isFinishing() || activity.isDestroyed()) return;
-                new MethodFlowChartTask(activity, methodName).start(); // Start the flowchart generation task
+                if (activity instanceof DexEditorActivity) {
+                    new MethodFlowChartTask((DexEditorActivity) activity, sourcePath, sourceClass,
+                            methodName).start();
+                }
             }
         }, 200L);
     }
@@ -436,6 +466,9 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
     public void smali2Java(final String methodName) {
         final Activity activity = getActivity();
         if (activity == null || activity.isFinishing()) return;
+        final String sourcePath = smaliFilePath;
+        final String sourceClass = fullClassName;
+        final int sourceDexVersion = dexVersion;
 
         if (activity instanceof DexEditorActivity) {
             DexEditorActivity dexActivity = (DexEditorActivity) activity;
@@ -443,8 +476,9 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
             String title = SmaliHelper.extractSimpleName(fullClassName) + "." + _getTextBefore(methodName, "(");
 
             // Check if tab already exists to avoid redundant decompilation
-            for (int i = 0; i < DexEditorActivity.tabs.size(); i++) {
-                DexEditorActivity.EditorTab tab = DexEditorActivity.tabs.get(i);
+            List<EditorTab> openTabs = dexActivity.getOpenTabsSnapshot();
+            for (int i = 0; i < openTabs.size(); i++) {
+                EditorTab tab = openTabs.get(i);
                 if (tab.className.equals(cleanedClassName) && tab.title.equals(title) && tab.type == 1) {
                     dexActivity.showEditor(i);
                     dismiss();
@@ -454,7 +488,11 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
         }
         
         dismiss();
-        new Handler(Looper.getMainLooper()).postDelayed(new SmaliToJavaTask(activity, methodName), 200L);
+        if (activity instanceof DexEditorActivity) {
+            new Handler(Looper.getMainLooper()).postDelayed(
+                    new SmaliToJavaTask((DexEditorActivity) activity, sourcePath, sourceClass,
+                            sourceDexVersion, methodName), 200L);
+        }
     }
 
     public void showExceptionDlg(final Activity activity, final Exception e) {
@@ -477,226 +515,130 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
         @Override
         public void run() {
             saveCurrentState(); // Save current scroll position before reloading data
-            new LoadDataTask().execute();
+            if (loadDataTask != null) loadDataTask.cancel();
+            loadDataTask = new LoadDataTask(SmaliMethodFieldListFragment.this, smaliFilePath);
+            loadDataTask.execute();
         }
     }
 
-    @SuppressLint("StaticFieldLeak")
-    private class LoadDataTask {
+    private static final class LoadDataTask {
+        private final WeakReference<SmaliMethodFieldListFragment> fragmentRef;
+        private final File sourceFile;
         private final Handler mainHandler = new Handler(Looper.getMainLooper());
+        private volatile boolean cancelled;
+        private Thread worker;
+
+        LoadDataTask(SmaliMethodFieldListFragment fragment, String filePath) {
+            fragmentRef = new WeakReference<>(fragment);
+            sourceFile = new File(filePath);
+        }
 
         void execute() {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    final Map<String, List<HashMap<String, Object>>> results = doInBackground();
-                    mainHandler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            onPostExecute(results);
-                        }
-                    });
+            worker = new Thread(() -> {
+                final SmaliNavigationParser.Result result;
+                try {
+                    result = SmaliNavigationParser.parse(sourceFile, () -> cancelled);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    return;
                 }
-            }).start();
+                if (result == null) return;
+                mainHandler.post(() -> {
+                    SmaliMethodFieldListFragment fragment = fragmentRef.get();
+                    if (cancelled || fragment == null || fragment.loadDataTask != this
+                            || !fragment.isAdded() || fragment.getView() == null) return;
+                    fragment.loadDataTask = null;
+                    fragment.onLoadDataParsed(result);
+                });
+            }, "dex-editor-method-field-load");
+            worker.start();
         }
 
-        protected Map<String, List<HashMap<String, Object>>> doInBackground() {
-            Map<String, List<HashMap<String, Object>>> parsedDataMap = new HashMap<>();
-            List<HashMap<String, Object>> methodInfoList = new ArrayList<>();
-            List<HashMap<String, Object>> fieldInfoList = new ArrayList<>();
-            List<HashMap<String, Object>> classInfoList = new ArrayList<>();
-            List<HashMap<String, Object>> stringList = new ArrayList<>();
-
-            try (BufferedReader smaliFileReader = new BufferedReader(new FileReader(smaliFilePath))) {
-                // Open the smali file for reading
-                String currentLine;
-                int currentLineNumber = 0;
-                boolean isInsideMethod = false;
-                String currentMethodName = "";
-                String currentFullMethodSignature = "";
-                int methodStartLine = -1;
-
-                // Read the smali file line by line
-                while ((currentLine = smaliFileReader.readLine()) != null) {
-                    currentLineNumber++;
-                    String trimmedLine = currentLine.trim();
-
-                    // Skip empty lines
-                    if (trimmedLine.isEmpty()) {
-                        continue;
-                    }
-
-                    // Extract strings
-                    if (trimmedLine.startsWith("const-string") || trimmedLine.startsWith("const-string/jumbo")) {
-                        int startIndex = trimmedLine.indexOf("\"");
-                        int endIndex = trimmedLine.lastIndexOf("\"");
-                        if (startIndex != -1 && endIndex != -1) {
-                            String extractedString = trimmedLine.substring(startIndex + 1, endIndex);
-
-                            HashMap<String, Object> stringInfo = new HashMap<>();
-                            stringInfo.put("StringName", extractedString);
-                            stringInfo.put("StartLineNumber", currentLineNumber);
-                            stringList.add(stringInfo);
-                        }
-                    }
-
-                    // Split the line into tokens for easier parsing
-                    String[] tokens = trimmedLine.split("\\s+");
-
-                    // Check if the line defines a method
-                    if (tokens[0].equals(".method")) {
-                        isInsideMethod = true;
-                        currentMethodName = tokens[tokens.length - 1]; // Last token is the method name
-                        currentFullMethodSignature = currentLine.trim(); // Store full method signature
-                        methodStartLine = currentLineNumber;
-                    }
-                    // Check if the line ends a method
-                    else if (tokens[0].equals(".end") && tokens[1].equals("method")) {
-                        if (isInsideMethod && methodStartLine != -1) {
-                            // Create a method info entry
-                            HashMap<String, Object> methodInfo = new HashMap<>();
-                            methodInfo.put("MethodOrFieldName", currentMethodName); // Original behavior
-                            methodInfo.put("FullMethodOrField", currentFullMethodSignature); // New full signature
-                            methodInfo.put("StartLineNumber", methodStartLine);
-                            methodInfo.put("EndLineNumber", currentLineNumber);
-                            methodInfoList.add(methodInfo);
-
-                            // Reset method tracking variables
-                            isInsideMethod = false;
-                            currentMethodName = "";
-                            currentFullMethodSignature = "";
-                            methodStartLine = -1;
-                        }
-                    }
-                    // Check if the line defines a field
-                    else if (tokens[0].equals(".field")) {
-                        String fieldSignature = trimmedLine.substring(trimmedLine.indexOf(".field") + 7).trim();
-                        int colonIndex = fieldSignature.indexOf(58);
-                        if (colonIndex != -1) {
-                            String fieldName = fieldSignature.substring(0, colonIndex).trim();
-
-                            HashMap<String, Object> fieldInfo = new HashMap<>();
-                            // Original behavior
-                            fieldInfo.put("MethodOrFieldName",
-                                    fieldName.substring(fieldName.lastIndexOf(32) + 1) +
-                                            ":" + fieldSignature.substring(colonIndex + 1).trim());
-                            // New full signature
-                            fieldInfo.put("FullMethodOrField", currentLine.trim());
-                            fieldInfo.put("StartLineNumber", currentLineNumber);
-                            fieldInfoList.add(fieldInfo);
-                        }
-                    }
-
-                    // Check if the line defines a class
-                    else if (tokens[0].equals(".class") && trimmedLine.endsWith(";")) {
-                        String className = tokens[tokens.length - 1]; // Last token is the class name
-                        fullClassName = className;
-                        // Read the next line to check for the superclass
-                        String nextLine = smaliFileReader.readLine();
-                        if (nextLine != null && nextLine.trim().startsWith(".super")) {
-                            String superClassName = nextLine.trim().substring(nextLine.indexOf(".super") + 7).trim();
-
-                            // Create a class info entry
-                            HashMap<String, Object> classInfo = new HashMap<>();
-                            classInfo.put("MethodOrFieldName", className);
-                            classInfo.put("StartLineNumber", (currentLineNumber - 1));
-                            classInfo.put("SuperClass", superClassName);
-                            classInfoList.add(classInfo);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-            // Close the file reader
-
-            // Add all parsed data to the map
-            parsedDataMap.put("MethodInfo", methodInfoList);
-            parsedDataMap.put("FieldInfo", fieldInfoList);
-            parsedDataMap.put("ClassInfo", classInfoList);
-
-            // Add the string list to the parsed data map
-            parsedDataMap.put("StringInfo", stringList);
-            return parsedDataMap;
+        void cancel() {
+            cancelled = true;
+            Thread current = worker;
+            if (current != null) current.interrupt();
         }
 
+    }
 
-        @SuppressLint("NotifyDataSetChanged")
-        protected void onPostExecute(Map<String, List<HashMap<String, Object>>> parsedDataMap) {
-            if (parsedDataMap != null && !parsedDataMap.isEmpty()) {
-                methodOrFieldInfo.clear();
-                stringListInfo.clear();
+    @SuppressLint("NotifyDataSetChanged")
+    private void onLoadDataParsed(SmaliNavigationParser.Result result) {
+        fullClassName = result.getClassName();
+        Map<String, List<HashMap<String, Object>>> parsedDataMap = result.getData();
+        if (parsedDataMap != null && !parsedDataMap.isEmpty()) {
+            methodOrFieldInfo.clear();
+            stringListInfo.clear();
 
-                methodOrFieldInfo.addAll(Objects.requireNonNull(parsedDataMap.get("ClassInfo")));
-                methodOrFieldInfo.addAll(Objects.requireNonNull(parsedDataMap.get("FieldInfo")));
-                methodOrFieldInfo.addAll(Objects.requireNonNull(parsedDataMap.get("MethodInfo")));
-                stringListInfo.addAll(Objects.requireNonNull(parsedDataMap.get("StringInfo")));
+            methodOrFieldInfo.addAll(Objects.requireNonNull(parsedDataMap.get("ClassInfo")));
+            methodOrFieldInfo.addAll(Objects.requireNonNull(parsedDataMap.get("FieldInfo")));
+            methodOrFieldInfo.addAll(Objects.requireNonNull(parsedDataMap.get("MethodInfo")));
+            stringListInfo.addAll(Objects.requireNonNull(parsedDataMap.get("StringInfo")));
 
-                savedMethodData = new Gson().toJson(methodOrFieldInfo);
+            savedMethodData = new Gson().toJson(methodOrFieldInfo);
 
-                savedStringsData = new Gson().toJson(stringListInfo);
+            savedStringsData = new Gson().toJson(stringListInfo);
 
-                methodRecyclerView.setAdapter(new MethodListAdapter(methodOrFieldInfo));
-                stringsRecyclerView.setAdapter(new StringListAdapter(stringListInfo));
+            methodRecyclerView.setAdapter(new MethodListAdapter(methodOrFieldInfo));
+            stringsRecyclerView.setAdapter(new StringListAdapter(stringListInfo));
 
 
-                int methodPositionToScroll = -1;
-                int stringPositionToScroll = -1;
+            int methodPositionToScroll = -1;
+            int stringPositionToScroll = -1;
 
-                // Step 1: Find position in methodOrFieldInfo
-                for (int i = 0; i < methodOrFieldInfo.size(); i++) {
-                    Map<String, Object> item = methodOrFieldInfo.get(i);
-                    String startLineNumber = Objects.requireNonNull(item.get("StartLineNumber")).toString();
-                    int startLine = (int) Math.floor(Double.parseDouble(startLineNumber));
+            // Step 1: Find position in methodOrFieldInfo
+            for (int i = 0; i < methodOrFieldInfo.size(); i++) {
+                Map<String, Object> item = methodOrFieldInfo.get(i);
+                String startLineNumber = Objects.requireNonNull(item.get("StartLineNumber")).toString();
+                int startLine = (int) Math.floor(Double.parseDouble(startLineNumber));
 
-                    if (item.containsKey("EndLineNumber")) {
-                        // This is a method - check line range
-                        String endLineNumber = Objects.requireNonNull(item.get("EndLineNumber")).toString();
-                        int endLine = (int) Math.floor(Double.parseDouble(endLineNumber));
-                        if (editorLineNumber >= startLine && editorLineNumber <= endLine) {
-                            methodPositionToScroll = i;
-                            break;
-                        }
-                    } else {
-                        if (editorLineNumber == startLine) {
-                            methodPositionToScroll = i;
-                            break;
-                        }
+                if (item.containsKey("EndLineNumber")) {
+                    // This is a method - check line range
+                    String endLineNumber = Objects.requireNonNull(item.get("EndLineNumber")).toString();
+                    int endLine = (int) Math.floor(Double.parseDouble(endLineNumber));
+                    if (editorLineNumber >= startLine && editorLineNumber <= endLine) {
+                        methodPositionToScroll = i;
+                        break;
                     }
-
-                }
-
-                // Step 2: Find position in stringListInfo
-                for (int i = 0; i < stringListInfo.size(); i++) {
-                    String startLineNumber = stringListInfo.get(i).get("StartLineNumber").toString();
-                    int startLine = (int) Math.floor(Double.parseDouble(startLineNumber));
+                } else {
                     if (editorLineNumber == startLine) {
-                        stringPositionToScroll = i;
+                        methodPositionToScroll = i;
                         break;
                     }
                 }
 
-                // Step 3: Update adapters for both RecyclerViews
-                if (methodRecyclerView.getAdapter() != null) {
-                    methodRecyclerView.getAdapter().notifyDataSetChanged();
-                }
-                if (stringsRecyclerView.getAdapter() != null) {
-                    stringsRecyclerView.getAdapter().notifyDataSetChanged();
-                }
-
-                // Step 4: Scroll the appropriate RecyclerView based on the found position
-                if (methodPositionToScroll != -1) {
-                    // Scroll methodRecyclerView and ensure it's visible
-                    methodRecyclerView.scrollToPosition(methodPositionToScroll); // Immediate scroll
-                } else if (stringPositionToScroll != -1) {
-                    // Scroll stringsRecyclerView and ensure it's visible
-                    stringsRecyclerView.scrollToPosition(stringPositionToScroll); // Immediate scroll
-
-                }
-
-                // Restore state after silent reload
-                restoreRecyclerViewState();
             }
+
+            // Step 2: Find position in stringListInfo
+            for (int i = 0; i < stringListInfo.size(); i++) {
+                String startLineNumber = stringListInfo.get(i).get("StartLineNumber").toString();
+                int startLine = (int) Math.floor(Double.parseDouble(startLineNumber));
+                if (editorLineNumber == startLine) {
+                    stringPositionToScroll = i;
+                    break;
+                }
+            }
+
+            // Step 3: Update adapters for both RecyclerViews
+            if (methodRecyclerView.getAdapter() != null) {
+                methodRecyclerView.getAdapter().notifyDataSetChanged();
+            }
+            if (stringsRecyclerView.getAdapter() != null) {
+                stringsRecyclerView.getAdapter().notifyDataSetChanged();
+            }
+
+            // Step 4: Scroll the appropriate RecyclerView based on the found position
+            if (methodPositionToScroll != -1) {
+                // Scroll methodRecyclerView and ensure it's visible
+                methodRecyclerView.scrollToPosition(methodPositionToScroll); // Immediate scroll
+            } else if (stringPositionToScroll != -1) {
+                // Scroll stringsRecyclerView and ensure it's visible
+                stringsRecyclerView.scrollToPosition(stringPositionToScroll); // Immediate scroll
+
+            }
+
+            // Restore state after silent reload
+            restoreRecyclerViewState();
         }
     }
 
@@ -922,130 +864,128 @@ public class SmaliMethodFieldListFragment extends DialogFragment {
         }
     }
 
-    // Task to generate a method flowchart using viz-js locally
-    private class MethodFlowChartTask extends Thread {
-        private final Activity activity;
+    private static class MethodFlowChartTask implements Runnable {
+        private final DexEditorActivity activity;
+        private final String sourcePath;
+        private final String sourceClass;
         private final String methodName;
-        private AlertCircularProgress pd;
+        private AlertCircularProgress progress;
 
-        public MethodFlowChartTask(Activity activity, String methodName) {
+        MethodFlowChartTask(DexEditorActivity activity, String sourcePath, String sourceClass,
+                            String methodName) {
             this.activity = activity;
+            this.sourcePath = sourcePath;
+            this.sourceClass = sourceClass;
             this.methodName = methodName;
+        }
+
+        void start() {
+            if (activity.isFinishing() || activity.isDestroyed()) return;
+            progress = new AlertCircularProgress(activity);
+            progress.setMessage("Generating flowchart...");
+            progress.show();
+            activity.executeBackgroundTask("dex-editor-method-flowchart", this);
         }
 
         @Override
         public void run() {
-            activity.runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    pd = new AlertCircularProgress(activity);
-                    pd.setMessage("Generating flowchart...");
-                    pd.show();
-                }
-            });
-
             try {
-                ArrayList<String> methodList = new ArrayList<>();
-                methodList.add(methodName);
-                DrawFlowDiagram drawFlowDiagram = new DrawFlowDiagram(smaliFilePath, methodList.toArray(new String[0]));
-                drawFlowDiagram.run();
-
-                activity.runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (pd != null) pd.dismiss();
-                        
-                        for (Method method : drawFlowDiagram.getClassInSmali().getMethodDict().values()) {
-                            final String dotDiagram = drawFlowDiagram.drawMethodFlowDiagram(method);
-
-                            if (activity instanceof DexEditorActivity) {
-                                String cleanedClassName = SmaliHelper.smali2OnlySlash(fullClassName);
-                                String title = SmaliHelper.extractSimpleName(fullClassName) + "." + _getTextBefore(methodName, "(");
-                                String subtitle = "(" + _getTextAfter(methodName, "(");
-                                ((DexEditorActivity) activity).addTab(cleanedClassName, title, subtitle, dotDiagram, 2);
-                            }
-                        }
+                if (Thread.currentThread().isInterrupted()) return;
+                DrawFlowDiagram diagram = new DrawFlowDiagram(sourcePath, new String[]{methodName});
+                diagram.run();
+                List<String> diagrams = new ArrayList<>();
+                for (Method method : diagram.getClassInSmali().getMethodDict().values()) {
+                    if (Thread.currentThread().isInterrupted()) return;
+                    diagrams.add(diagram.drawMethodFlowDiagram(method));
+                }
+                if (Thread.currentThread().isInterrupted()) return;
+                String cleanedClassName = SmaliHelper.smali2OnlySlash(sourceClass);
+                String title = SmaliHelper.extractSimpleName(sourceClass) + "." + before(methodName, "(");
+                String subtitle = "(" + after(methodName, "(");
+                activity.runOnUiThreadIfAlive(() -> {
+                    dismissProgress();
+                    for (String dot : diagrams) {
+                        activity.addTab(cleanedClassName, title, subtitle, dot, 2);
                     }
                 });
-            } catch (final Exception e) {
-                activity.runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (pd != null) pd.dismiss();
-                        showExceptionDlg(activity, e);
-                    }
+            } catch (Exception e) {
+                final String message = e.getMessage() == null ? e.toString() : e.getMessage();
+                activity.runOnUiThreadIfAlive(() -> {
+                    dismissProgress();
+                    Notify_MT.Notify(activity, activity.getString(R.string.error), message,
+                            activity.getString(R.string.close));
                 });
             }
         }
+
+        private void dismissProgress() {
+            if (progress != null) progress.dismiss();
+        }
     }
 
-    // Task to convert Smali code to Java code
-    private class SmaliToJavaTask implements Runnable {
-        private final Activity activity;
-        private final String methodName;
-        private AlertCircularProgress pd;
+    public void saveStateForHost() {
+        saveCurrentState();
+    }
 
-        public SmaliToJavaTask(Activity activity, String methodName) {
+    private static class SmaliToJavaTask implements Runnable {
+        private final DexEditorActivity activity;
+        private final String sourcePath;
+        private final String sourceClass;
+        private final int dexVersion;
+        private final String methodName;
+        private AlertCircularProgress progress;
+
+        SmaliToJavaTask(DexEditorActivity activity, String sourcePath, String sourceClass,
+                        int dexVersion, String methodName) {
             this.activity = activity;
+            this.sourcePath = sourcePath;
+            this.sourceClass = sourceClass;
+            this.dexVersion = dexVersion;
             this.methodName = methodName;
         }
 
-        @SuppressLint("StaticFieldLeak")
         @Override
         public void run() {
-            activity.runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    pd = new AlertCircularProgress(activity);
-                    pd.setMessage("Decompiling...");
-                    pd.show();
+            if (activity.isFinishing() || activity.isDestroyed()) return;
+            progress = new AlertCircularProgress(activity);
+            progress.setMessage("Decompiling...");
+            progress.show();
+            activity.executeBackgroundTask("dex-editor-method-smali-to-java", () -> {
+                try {
+                    if (Thread.currentThread().isInterrupted()) return;
+                    SmaliMethodBody body = new SmaliMethodBody(sourcePath, new String[]{methodName}, true);
+                    String javaCode = Smali2Java.translate(body.parseClassInSmali(), dexVersion);
+                    if (Thread.currentThread().isInterrupted()) return;
+                    String cleanedClassName = SmaliHelper.smali2OnlySlash(sourceClass);
+                    String title = SmaliHelper.extractSimpleName(sourceClass) + "." + before(methodName, "(");
+                    activity.runOnUiThreadIfAlive(() -> {
+                        dismissProgress();
+                        activity.addTab(cleanedClassName, title, javaCode, 1);
+                    });
+                } catch (Exception e) {
+                    final String message = e.getMessage() == null ? e.toString() : e.getMessage();
+                    activity.runOnUiThreadIfAlive(() -> {
+                        dismissProgress();
+                        Notify_MT.Notify(activity, activity.getString(R.string.error), message,
+                                activity.getString(R.string.close));
+                    });
                 }
             });
-
-            new AsyncTask<Void, Void, String>() {
-                @Override
-                protected String doInBackground(Void... voids) {
-                    try {
-                        // Parse the Smali method and convert it to Java
-                        SmaliMethodBody smaliMethodBody = new SmaliMethodBody(smaliFilePath, new String[]{methodName}, true);
-                        return Smali2Java.translate(smaliMethodBody.parseClassInSmali(), dexVersion);
-                    } catch (final Exception e) {
-                        activity.runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (pd != null) pd.dismiss();
-                                showExceptionDlg(activity, e);
-                            }
-                        });
-                        return null;
-                    }
-                }
-
-                @Override
-                protected void onPostExecute(String javaCode) {
-                    activity.runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (pd != null) pd.dismiss();
-                        }
-                    });
-                    
-                    if (javaCode != null) {
-                        activity.runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (activity instanceof DexEditorActivity) {
-                                    DexEditorActivity dexActivity = (DexEditorActivity) activity;
-                                    String cleanedClassName = SmaliHelper.smali2OnlySlash(fullClassName);
-                                    String title = SmaliHelper.extractSimpleName(fullClassName) + "." + _getTextBefore(methodName, "(");
-                                    dexActivity.addTab(cleanedClassName, title, javaCode, 1);
-                                }
-                            }
-                        });
-                    }
-                }
-            }.execute();
         }
+
+        private void dismissProgress() {
+            if (progress != null) progress.dismiss();
+        }
+    }
+
+    private static String before(String text, String delimiter) {
+        int index = text.indexOf(delimiter);
+        return index != -1 ? text.substring(0, index) : "";
+    }
+
+    private static String after(String text, String delimiter) {
+        int index = text.indexOf(delimiter);
+        return index != -1 ? text.substring(index + delimiter.length()) : "";
     }
 
     private class StringListAdapter extends RecyclerView.Adapter<StringListAdapter.ViewHolder> {

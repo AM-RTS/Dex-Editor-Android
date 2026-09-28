@@ -36,6 +36,7 @@
 
 package modder.hub.dexeditor.fragment;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -47,6 +48,7 @@ import androidx.annotation.NonNull;
 import androidx.preference.EditTextPreference;
 import androidx.preference.ListPreference;
 import androidx.preference.Preference;
+import androidx.preference.PreferenceDataStore;
 import androidx.preference.PreferenceFragmentCompat;
 
 import java.util.Objects;
@@ -64,6 +66,7 @@ implements SharedPreferences.OnSharedPreferenceChangeListener {
 	
 	// Preference keys
 	private static final String PREFS_NAME = "editor_prefs";
+	private static final String CREDENTIALS_PREFS_NAME = "ai_credentials";
 	private static final String KEY_FONT_TYPE = "font_type";
 	private static final String KEY_FONT_SIZE = "font_size";
 	private static final String KEY_SHOW_INDENT = "show_indent_guide";
@@ -75,6 +78,7 @@ implements SharedPreferences.OnSharedPreferenceChangeListener {
 	
 	@Override
 	public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
+		migrateApiKeyFromEditorPreferences(requireContext());
 		// Initialize preferences
 		getPreferenceManager().setSharedPreferencesName(PREFS_NAME);
 		setPreferencesFromResource(R.xml.preferences, rootKey);
@@ -94,6 +98,18 @@ implements SharedPreferences.OnSharedPreferenceChangeListener {
 		// API Key preference
 		EditTextPreference apiKeyPref = findPreference(KEY_GEMINI_API);
 		if (apiKeyPref != null) {
+			apiKeyPref.setPreferenceDataStore(new PreferenceDataStore() {
+				@Override
+				public String getString(String key, String defaultValue) {
+					return getCredentials(requireContext()).getString(key, defaultValue);
+				}
+
+				@Override
+				public void putString(String key, String value) {
+					getCredentials(requireContext()).edit().putString(key, value).apply();
+				}
+			});
+			apiKeyPref.setText(getChatGptApiKey(requireContext()));
 			apiKeyPref.setOnPreferenceChangeListener(new Preference.OnPreferenceChangeListener() {
 				@Override
 				public boolean onPreferenceChange(@NonNull Preference preference, Object newValue) {
@@ -119,6 +135,23 @@ implements SharedPreferences.OnSharedPreferenceChangeListener {
 				}
 			});
 		}
+	}
+
+	@SuppressLint("ApplySharedPref")
+	private static synchronized void migrateApiKeyFromEditorPreferences(Context context) {
+		SharedPreferences editorPrefs = getPrefs(context);
+		if (!editorPrefs.contains(KEY_GEMINI_API)) {
+			return;
+		}
+		String oldKey = editorPrefs.getString(KEY_GEMINI_API, "");
+		SharedPreferences credentials = getCredentials(context);
+		if (oldKey != null && !oldKey.isEmpty() && !credentials.contains(KEY_GEMINI_API)) {
+			if (!credentials.edit().putString(KEY_GEMINI_API, oldKey).commit()) {
+				return;
+			}
+		}
+		// Keep the removal synchronous so the legacy copy cannot survive a process exit.
+		editorPrefs.edit().remove(KEY_GEMINI_API).commit();
 	}
 	
 	private boolean validateAndSetApiKey(Preference preference, String apiKey) {
@@ -209,7 +242,12 @@ implements SharedPreferences.OnSharedPreferenceChangeListener {
 	}
 	
 	public static String getChatGptApiKey(Context context) {
-		return getPrefs(context).getString(KEY_GEMINI_API, "");
+		migrateApiKeyFromEditorPreferences(context);
+		return getCredentials(context).getString(KEY_GEMINI_API, "");
+	}
+
+	private static SharedPreferences getCredentials(Context context) {
+		return context.getSharedPreferences(CREDENTIALS_PREFS_NAME, Context.MODE_PRIVATE);
 	}
 	
 	private static SharedPreferences getPrefs(Context context) {

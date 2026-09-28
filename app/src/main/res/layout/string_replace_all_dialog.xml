@@ -18,7 +18,7 @@
             android:id="@+id/etFind"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Find" />
+        android:hint="@string/find" />
     </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.textfield.TextInputLayout
@@ -32,7 +32,7 @@
             android:id="@+id/etReplace"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Replace with" />
+        android:hint="@string/replace_with" />
     </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.checkbox.MaterialCheckBox
@@ -40,7 +40,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="Match case"
+        android:text="@string/match_case"
         android:checked="false" />
 
 </LinearLayout>

@@ -1,13 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical">
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
+    android:orientation="horizontal">
 
         <!-- Indentation Spacer: Move outside item_content to prevent ripple covering it -->
         <View
@@ -35,6 +31,7 @@
                     android:layout_width="14dp"
                     android:layout_height="14dp"
                     android:layout_gravity="center"
+                    android:importantForAccessibility="no"
                     android:src="@drawable/ic_chevron_right"
                     android:visibility="gone" />
 
@@ -66,6 +63,7 @@
                         android:layout_height="12dp"
                         android:layout_gravity="center"
                         android:focusable="false"
+                        android:importantForAccessibility="no"
                         android:scaleType="fitCenter"
                         android:src="@drawable/default_image"
                         android:visibility="gone" />
@@ -98,7 +96,7 @@
                         android:ellipsize="end"
                         android:focusable="false"
                         android:gravity="center_vertical"
-                        android:text="TextView"
+                        tools:text="TextView"
                         android:textColor="#ff000000"
                         android:textSize="14sp"
                         android:textStyle="normal" />
@@ -123,6 +121,4 @@
                 android:background="#E0E0E0"
                 android:visibility="gone" />
         </LinearLayout>
-    </LinearLayout>
-
 </LinearLayout>

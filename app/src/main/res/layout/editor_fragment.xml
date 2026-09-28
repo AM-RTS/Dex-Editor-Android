@@ -3,7 +3,6 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FFFFFF"
     android:orientation="vertical">
 
     <LinearLayout
@@ -12,6 +11,7 @@
         android:layout_height="20dp"
         android:background="#FFFFFF"
         android:orientation="horizontal"
+        android:baselineAligned="false"
         android:paddingTop="0.1dp">
 
         <LinearLayout
@@ -32,9 +32,9 @@
                 android:ellipsize="end"
                 android:gravity="start|center_vertical"
                 android:maxLines="1"
-                android:text="..."
+                android:text="@string/ellipsis"
                 android:textColor="#B0B0B0"
-                android:textSize="10sp" />
+                android:textSize="11sp" />
         </LinearLayout>
 
         <LinearLayout
@@ -53,9 +53,9 @@
                 android:layout_gravity="center_horizontal|center_vertical"
                 android:layout_marginRight="5dp"
                 android:gravity="center_horizontal|center_vertical"
-                android:text="1:1"
+                android:text="@string/cursor_position_default"
                 android:textColor="#B0B0B0"
-                android:textSize="10sp" />
+                android:textSize="11sp" />
 
             <TextView
                 android:id="@+id/textview3"
@@ -64,9 +64,9 @@
                 android:layout_gravity="center_horizontal|center_vertical"
                 android:layout_marginRight="3dp"
                 android:gravity="center_horizontal|center_vertical"
-                android:text="│"
+                android:text="@string/vertical_separator"
                 android:textColor="#B0B0B0"
-                android:textSize="10sp" />
+                android:textSize="11sp" />
 
             <TextView
                 android:id="@+id/methodName"
@@ -77,9 +77,9 @@
                 android:ellipsize="end"
                 android:gravity="end|center_vertical"
                 android:maxLines="1"
-                android:text="..."
+                android:text="@string/ellipsis"
                 android:textColor="#B0B0B0"
-                android:textSize="10sp" />
+                android:textSize="11sp" />
         </LinearLayout>
     </LinearLayout>
 

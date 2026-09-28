@@ -2,12 +2,17 @@
     xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
-    <uses-permission android:name="android.permission.WRITE_MEDIA_STORAGE"
-        tools:ignore="ProtectedPermissions" />
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+    </queries>
     <application
         android:allowBackup="true"
         android:icon="@drawable/app_icon"
@@ -15,9 +20,9 @@
         android:alwaysRetainTaskState="true"
         android:largeHeap="true"
         android:supportsRtl="false"
-        android:fullBackupContent="true"
-        android:usesCleartextTraffic="true"
-        android:requestLegacyExternalStorage="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:usesCleartextTraffic="false"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
@@ -36,9 +41,6 @@
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
             android:hardwareAccelerated="true"
             android:supportsPictureInPicture="true" />
-        <activity
-            android:name=".DebugActivity"
-            android:theme="@style/AppTheme.DebugActivity" />
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="modder.hub.dexeditor.androidx-startup"
@@ -55,17 +57,7 @@
             android:name="modder.hub.dexeditor.activity.DexEditorActivity"
             android:configChanges="orientation|screenSize" />
         <activity
-            android:name="modder.hub.dexeditor.activity.JavaViewActivity"
-            android:configChanges="orientation|screenSize" />
-        <activity
             android:name="modder.hub.dexeditor.activity.EditFloatingMenusActivity"
-            android:configChanges="orientation|screenSize" />
-
-        <activity
-            android:name="modder.hub.dexeditor.activity.ImageViewerActivity"
-            android:configChanges="orientation|screenSize" />
-        <activity
-            android:name="modder.hub.dexeditor.activity.GraphViewActivity"
             android:configChanges="orientation|screenSize" />
         <activity
             android:name="modder.hub.dexeditor.activity.AIOverViewActivity"

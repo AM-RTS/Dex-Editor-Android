@@ -57,6 +57,7 @@ import java.util.Map;
 
 import modder.hub.dexeditor.activity.DexEditorActivity;
 import modder.hub.dexeditor.utils.DexFileSelector;
+import modder.hub.dexeditor.utils.EdgeToEdge;
 import modder.hub.dexeditor.utils.FilePermissionManager;
 import modder.hub.dexeditor.utils.FileUtil;
 
@@ -79,6 +80,7 @@ public class MainActivity extends AppCompatActivity implements FilePermissionMan
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.main);
+        EdgeToEdge.apply(this);
 
         // Register launchers before initialization
         manageStorageLauncher = registerForActivityResult(
@@ -127,7 +129,6 @@ public class MainActivity extends AppCompatActivity implements FilePermissionMan
     @Override
     public void onPermissionGranted() {
         enableUI();
-        initializeLogic();
     }
 
     @Override
@@ -146,7 +147,6 @@ public class MainActivity extends AppCompatActivity implements FilePermissionMan
         pickDexFileButton.setEnabled(true);
         openDexFileButton.setEnabled(true);
         dexFilePathEditText.setEnabled(true);
-        initializeLogic();
     }
 
     // Initialize UI components and set up listeners
@@ -163,7 +163,7 @@ public class MainActivity extends AppCompatActivity implements FilePermissionMan
         toolbar.setNavigationOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                onBackPressed();
+                getOnBackPressedDispatcher().onBackPressed();
             }
         });
 
@@ -196,6 +196,7 @@ public class MainActivity extends AppCompatActivity implements FilePermissionMan
                 dexSelector.setOnFilesSelectedListener(new DexFileSelector.OnFilesSelectedListener() {
                     @Override
                     public void onFilesSelected(List<String> selectedFilePaths) {
+                        if (selectedFilePaths == null || selectedFilePaths.isEmpty()) return;
                         // Convert List<String> to ArrayList<String> (if needed for Intent)
                         ArrayList<String> filePathsArrayList = new ArrayList<String>(selectedFilePaths);
 
@@ -221,11 +222,6 @@ public class MainActivity extends AppCompatActivity implements FilePermissionMan
                 startActivity(githubIntent);
             }
         });
-    }
-
-    // Initialize app logic (currently empty)
-    private void initializeLogic() {
-        // Add app logic here if needed
     }
 
     // Open a file picker dialog to select a .dex file
@@ -254,6 +250,7 @@ public class MainActivity extends AppCompatActivity implements FilePermissionMan
         filePickerDialog.setDialogSelectionListener(new DialogSelectionListener() {
             @Override
             public void onSelectedFilePaths(String[] selectedFilePaths) {
+                if (selectedFilePaths == null || selectedFilePaths.length == 0) return;
                 ArrayList<String> filePaths = new ArrayList<>(Arrays.asList(selectedFilePaths));
                 textView.setText(filePaths.get(0)); // Set the selected file path to the TextView
 

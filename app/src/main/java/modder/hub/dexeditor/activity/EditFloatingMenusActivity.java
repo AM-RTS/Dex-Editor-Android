@@ -56,6 +56,7 @@ import java.util.HashMap;
 import java.util.Objects;
 
 import modder.hub.dexeditor.R;
+import modder.hub.dexeditor.utils.EdgeToEdge;
 import modder.hub.dexeditor.updateSoraMenu.ItemMoveCallback;
 import modder.hub.dexeditor.updateSoraMenu.RecyclerViewAdapter;
 import modder.hub.dexeditor.updateSoraMenu.StartDragListener;
@@ -75,6 +76,7 @@ public class EditFloatingMenusActivity extends AppCompatActivity implements Star
     protected void onCreate(Bundle _savedInstanceState) {
         super.onCreate(_savedInstanceState);
         setContentView(R.layout.floating_menus_customize);
+        EdgeToEdge.apply(this);
         initialize(_savedInstanceState);
         initializeLogic();
     }
@@ -88,7 +90,7 @@ public class EditFloatingMenusActivity extends AppCompatActivity implements Star
         _toolbar.setNavigationOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View _v) {
-                onBackPressed();
+                getOnBackPressedDispatcher().onBackPressed();
             }
         });
 

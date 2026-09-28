@@ -1,0 +1,28 @@
+{
+  "format": "dex-editor-patch",
+  "version": 2,
+  "name": "Replace a hard-coded endpoint",
+  "rules": [
+    {
+      "id": "endpoint",
+      "target": "smali",
+      "mode": "literal",
+      "matchCase": true,
+      "classSelector": {
+        "field": "fullName",
+        "pattern": "com/example/ApiClient",
+        "exactlyMatch": true,
+        "matchCase": true
+      },
+      "methodSelector": {
+        "field": "name",
+        "pattern": "getEndpoint",
+        "exactlyMatch": true,
+        "matchCase": true
+      },
+      "find": "const-string v0, \"http://old.example\"",
+      "replace": "const-string v0, \"https://new.example\"",
+      "expectedMatches": 1
+    }
+  ]
+}

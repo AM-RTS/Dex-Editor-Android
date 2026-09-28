@@ -56,8 +56,8 @@ public class DrawFlowDiagram {
 
 	public DrawFlowDiagram(String smaliFilePath, String[] methodsToDraw) {
 		this.smaliFilePath = smaliFilePath;
-        this.methodsToDraw = methodsToDraw;
-        this.classInSmali = new ClassInSmali();
+		this.methodsToDraw = methodsToDraw;
+		this.classInSmali = new ClassInSmali();
 		this.curMethodName = null;
 	}
 

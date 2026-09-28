@@ -15,25 +15,35 @@ A work-in-progress multifunctional advanced *Android **DEX** file editor* for An
 - [x] Editing Smali with best code editor
 - [x] Batch class editor and navigator
 - [x] Multi dex loader and compiler
-- [x] Smali full fetured search and replacement with all type search methods
+- [x] Smali full-featured search and replacement with multiple search modes
 - [x] Jump to another class
 - [x] Smali compilation options
 - [x] Strings list tab
-- [x] Jump to smali lables (cond, try_catch etc.) within method body
+- [x] Jump to Smali labels (conditions, try/catch, etc.) within a method body
 - [x] Custom editor selection menu (Calling translation apps)
 - [x] Faster Dex compilation with real time progress update
-- [x] Supported propper error handling during smali compilation
+- [x] Error handling during Smali compilation
 - [x] Enhancement in smali library
 - [x] Full featured Smali Editor
 - [x] Supported DEX version 40 and 41(Partially)
-- [x] Working on android api 21 (only my build apk)
+
+## Architecture overview
+
+- `MainActivity` selects DEX files and starts an editing session.
+- `DexEditorActivity` coordinates the editor, explorer, open tabs, and session lifecycle. `EditorTabsAdapter` owns the drawer's open-tab list and gestures.
+- `ClassTree` is the in-memory DEX workspace: it indexes classes across input DEX files, stages edited classes and Smali, and records deleted classes.
+- `EditorFragment` presents a class as Smali. Saving assembles changed Smali back into a `ClassDef`; compiling writes staged DEX files through `DexFilePublisher`.
+- Patch files go through `SmaliPatchWorkflow` and `SmaliPatchEngine`. The engine validates selectors and match counts, assembles all affected classes for preview, then commits the set only after confirmation.
+
+The editor does not maintain a complete directory of `.smali` files. Smali is generated from the in-memory DEX model when needed.
 ## Getting Started
 
 ### Prerequisites
-- **Android Studio**: Latest version (Ladybug or newer recommended)
-- **JDK**: 17 or 21 (Required for Gradle 9+)
-- **Android SDK**: API 37 (Compile SDK)
+- **JDK**: 17 for the Gradle build
+- **Android SDK**: API 37 (compile SDK)
 - **Min SDK**: API 24
+- **Target SDK**: API 36
+- **Android Studio**: a version compatible with AGP 9.2.1
 
 ### Installation
 1. **Clone the repository**:
@@ -50,11 +60,43 @@ A work-in-progress multifunctional advanced *Android **DEX** file editor* for An
 ## Project Environment
 - **Gradle Version**: 9.5.0
 - **Android Gradle Plugin (AGP)**: 9.2.1
-- **Java Version**: 11 (for Sketchware Pro) / 17+ (for Android Studio)
+- **Java source and bytecode level**: 11
+
+## Build and checks
+
+On Windows:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+```
+
+On macOS or Linux:
+
+```bash
+./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+```
+
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. CI runs two smoke tests on a Gradle-managed Pixel 2 API 35 emulator: the launcher screen renders, and `DexEditorActivity` opens a generated DEX from shared Downloads, displays its Smali, navigates to a method, saves an edited class, applies a validated patch plan, writes the DEX, and reloads the saved output. The DEX test grants all-files access to the test app through the emulator's app-ops shell command. To run these checks locally, use `:app:pixel2api35DebugAndroidTest`; the interactive patch-file picker and preview dialogs are not covered by this smoke test.
+
+## Storage and credentials
+
+The editor requests `MANAGE_EXTERNAL_STORAGE` to work with DEX files selected from general device storage. The app currently targets API 36; `requestLegacyExternalStorage` is not used. The user-provided Gemini key is stored in app preferences and excluded from cloud backup and device transfer.
 
 ## To-Do
 - [ ] Batch Insertion and extraction of classes
 - [ ] Direct class renamer
+
+## Smali patch files
+
+From the DEX editor's **More** menu, choose **Apply patch file (.txt)**. Patch files are UTF-8 JSON with a `.txt` extension; [this example](examples/replace-endpoint.txt) is a ready-to-edit template.
+
+The top level requires `format: "dex-editor-patch"`, a supported `version` (`1` or `2`), a `name`, and an ordered `rules` array. Each rule requires a unique `id`, `target` (`smali` or `strings`), `mode` (`literal` or `regex`), `matchCase` (boolean), `find`, `replace`, and positive `expectedMatches`. `classes` remains an optional list of exact DEX descriptors such as `Lcom/example/ApiClient;`. Version 2 adds optional `classSelector` and `methodSelector` filters; version 1 files retain their original behavior. Use version 2 whenever either selector is present.
+
+A selector has a `pattern`, optional `mode` (`literal` by default), `matchCase` (false by default), and `exactlyMatch` (false by default). Literal matching defaults to case-insensitive contains, matching the GUI. `exactlyMatch: true` changes literal matching to a whole-value match. Regex selectors use Java regular expressions with `find()` semantics; as in the GUI, `exactlyMatch` does not anchor a regex. Class selectors support `field: "simpleName"` (default), `"fullName"` (slash-separated, without `L` or `;`), or `"descriptor"`. Method selectors support `field: "name"` (default) or `"signature"`, formatted as `name(parameters)returnType`, for example `value(Ljava/lang/String;)Ljava/lang/Object;`. The existing `classes` allow-list and `classSelector` are combined, so a class must satisfy both when both are present.
+
+Without a method selector, `smali` matches the complete current class text and `strings` matches only the contents of quoted Smali string literals. With a method selector, either target is restricted to matching `.method` blocks. Replacement text must use valid Smali escapes for `strings`. Literal mode treats both find and replace as plain text. Regex replacement uses Java replacement groups such as `$1`. `expectedMatches` is the exact total number of occurrences across the rule's selected classes and methods, so a stale patch fails closed.
+
+The app previews a patch only after every rule reaches its expected count and every changed class reassembles without changing its class descriptor. A mismatch or assembly error applies nothing. Confirming the preview stages the classes in the editor; use **Compile and save** to write the DEX files.
 
 ## Project build with
 - [Sketchware Pro](https://github.com/Sketchware-Pro/Sketchware-Pro) , Java 11 version
@@ -121,26 +163,6 @@ A work-in-progress multifunctional advanced *Android **DEX** file editor* for An
  </picture>
 </a>
 
-# License and Usage Restrictions
+## License
 
-This project is released under the Apache License, Version 2.0. However, please note the following restriction regarding the usage of this code:
-
-- You are strictly prohibited from using this code in private projects.
-- Contributions to this project are welcome within this repository only.
-
-For more details on the license terms and usage restrictions, please refer to the LICENSE file.
-
-# License
-    Copyright (C) 2024-26 Krushna Chandra
-
-    Licensed under the Apache License, Version 2.0 (the "License");
-    you may not use this file except in compliance with the License.
-    You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-    Unless required by applicable law or agreed to in writing, software
-    distributed under the License is distributed on an "AS IS" BASIS,
-    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    See the License for the specific language governing permissions and
-    limitations under the License.
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the full terms.

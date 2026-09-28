@@ -57,11 +57,13 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Locale;
 
 import modder.hub.dexeditor.R;
 import modder.hub.dexeditor.activity.DexEditorActivity;
 import modder.hub.dexeditor.model.TreeNode;
 import modder.hub.dexeditor.utils.TreeHelper;
+import modder.hub.dexeditor.utils.ClassTree;
 import modder.hub.dexeditor.utils.UIHelper;
 
 // Author ; @developer-krushna
@@ -240,7 +242,7 @@ public class TreeAdapter extends RecyclerView.Adapter<TreeAdapter.ViewHolder> {
                     toggleNode(node, pos);
                 } else if (node.isSnippet()) {
                     if (isSearchList) {
-                        boolean isDeleted = DexEditorActivity.classTree != null && !DexEditorActivity.classTree.classMap.containsKey(node.getFullName());
+                        boolean isDeleted = getClassTree() != null && !getClassTree().containsClass(node.getFullName());
                         if (isDeleted) {
                             showDeletedPrompt(node, pos);
                             return;
@@ -250,7 +252,7 @@ public class TreeAdapter extends RecyclerView.Adapter<TreeAdapter.ViewHolder> {
                 } else {
                     if (!isSelectionMode) {
                         if (isHistory && !node.isDirectory()) {
-                            boolean isDeleted = DexEditorActivity.classTree != null && !DexEditorActivity.classTree.classMap.containsKey(node.getFullName());
+                            boolean isDeleted = getClassTree() != null && !getClassTree().containsClass(node.getFullName());
                             if (isDeleted) {
                                 showDeletedPrompt(node, pos);
                                 return;
@@ -538,8 +540,8 @@ public class TreeAdapter extends RecyclerView.Adapter<TreeAdapter.ViewHolder> {
 
     private void highlightSnippet(TextView textView, TreeNode node, String query) {
         String text = node.getName();
-        String lowerText = text.toLowerCase();
-        String lowerQuery = query.toLowerCase();
+        String lowerText = text.toLowerCase(Locale.ROOT);
+        String lowerQuery = query.toLowerCase(Locale.ROOT);
         int firstMatch = lowerText.indexOf(lowerQuery);
 
         if (firstMatch != -1) {
@@ -554,7 +556,7 @@ public class TreeAdapter extends RecyclerView.Adapter<TreeAdapter.ViewHolder> {
             String displayText = prefix + text.substring(startLimit, endLimit).replace("\n", " ").replace("\r", " ") + suffix;
 
             android.text.SpannableString spannable = new android.text.SpannableString(displayText);
-            String lowerDisplay = displayText.toLowerCase();
+            String lowerDisplay = displayText.toLowerCase(Locale.ROOT);
             int s = 0;
             while ((s = lowerDisplay.indexOf(lowerQuery, s)) != -1) {
                 spannable.setSpan(new android.text.style.BackgroundColorSpan(0xFFB3E5FC), s, s + query.length(), android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -602,17 +604,24 @@ public class TreeAdapter extends RecyclerView.Adapter<TreeAdapter.ViewHolder> {
     }
 
     private boolean isNodeDeleted(TreeNode node) {
-        return DexEditorActivity.classTree != null && !DexEditorActivity.classTree.classMap.containsKey(node.getFullName());
+        ClassTree tree = getClassTree();
+        return tree != null && !tree.containsClass(node.getFullName());
     }
 
     private boolean isNodeDeletedCached(TreeNode node) {
         String fullName = node.getFullName();
         Boolean deleted = deletedStateCache.get(fullName);
         if (deleted == null) {
-            deleted = DexEditorActivity.classTree != null && !DexEditorActivity.classTree.classMap.containsKey(fullName);
+            ClassTree tree = getClassTree();
+            deleted = tree != null && !tree.containsClass(fullName);
             deletedStateCache.put(fullName, deleted);
         }
         return deleted;
+    }
+
+    private ClassTree getClassTree() {
+        return context instanceof DexEditorActivity
+                ? ((DexEditorActivity) context).getClassTree() : null;
     }
 
     private void showSearchPopupMenu(View view, TreeNode node) {
@@ -907,8 +916,7 @@ public class TreeAdapter extends RecyclerView.Adapter<TreeAdapter.ViewHolder> {
             @Override
             public void onClick(android.content.DialogInterface dialog, int which) {
                 if (listener != null) {
-                    listener.onNodeDeleted(node);
-                    removeItem(node, position);
+                    if (listener.onNodeDeleted(node)) removeItem(node, position);
                 }
             }
         });
@@ -1053,7 +1061,8 @@ public class TreeAdapter extends RecyclerView.Adapter<TreeAdapter.ViewHolder> {
     public interface OnNodeClickListener {
         void onNodeClick(TreeNode node);
 
-        void onNodeDeleted(TreeNode node);
+        /** Returns whether the adapter should remove this node from its backing list. */
+        boolean onNodeDeleted(TreeNode node);
 
         void onSelectionChanged(int count);
 

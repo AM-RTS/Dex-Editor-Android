@@ -36,6 +36,7 @@
 package modder.hub.dexeditor.utils;
 
 import android.annotation.SuppressLint;
+import android.os.Environment;
 
 import androidx.annotation.NonNull;
 
@@ -44,42 +45,27 @@ import com.android.tools.smali.baksmali.BaksmaliOptions;
 import com.android.tools.smali.baksmali.formatter.BaksmaliWriter;
 import com.android.tools.smali.dexlib2.Opcodes;
 import com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile;
-import com.android.tools.smali.dexlib2.iface.Annotation;
-import com.android.tools.smali.dexlib2.iface.AnnotationElement;
 import com.android.tools.smali.dexlib2.iface.ClassDef;
-import com.android.tools.smali.dexlib2.iface.Field;
-import com.android.tools.smali.dexlib2.iface.Method;
-import com.android.tools.smali.dexlib2.iface.MethodImplementation;
-import com.android.tools.smali.dexlib2.iface.instruction.Instruction;
-import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction;
-import com.android.tools.smali.dexlib2.iface.reference.Reference;
-import com.android.tools.smali.dexlib2.iface.reference.StringReference;
-import com.android.tools.smali.dexlib2.iface.value.AnnotationEncodedValue;
-import com.android.tools.smali.dexlib2.iface.value.ArrayEncodedValue;
-import com.android.tools.smali.dexlib2.iface.value.EncodedValue;
-import com.android.tools.smali.dexlib2.iface.value.StringEncodedValue;
 import com.android.tools.smali.smali.SmaliOptions;
 import com.android.tools.smali.smali2.Smali;
 import com.android.tools.smali.dexlib2.util.DexUtil;
-import com.android.tools.smali.dexlib2.writer.builder.DexBuilder;
-import com.android.tools.smali.dexlib2.writer.io.MemoryDataStore;
+import com.android.tools.smali.dexlib2.writer.io.FileDataStore;
+import com.android.tools.smali.dexlib2.writer.pool.DexPool;
 import com.google.common.collect.ImmutableList;
 import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 
-import java.io.BufferedOutputStream;
-import java.io.ByteArrayInputStream;
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStreamWriter;
 import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -91,13 +77,15 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
-import java.util.Stack;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
-import modder.hub.dexeditor.activity.DexEditorActivity;
 import modder.hub.dexeditor.model.TreeNode;
 
 public class ClassTree {
@@ -116,30 +104,24 @@ public class ClassTree {
      */
 
 
-    private String ALL_CLASSES_JSON;
     private String DELETED_CLASSES_JSON;
-    private String EDITED_CLASSES_JSON;
     private final String workDir;
+    private volatile boolean changed;
     private final Map<String, java.util.HashSet<String>> editedClassMap = new HashMap<>();
-    private final Map<String, String> pendingSmaliMap = new HashMap<>();
-    public Tree tree;
-    public HashMap<String, ClassDef> classMap;
-    public List<DexBackedDexFile> dexFiles;
-    public DexBackedDexFile dexFile;
-    public String Path;
-    public ClassDef curClassDef;
-    public int dep;
-    public Stack<String> path;
-    public String curFile;
-    public final List<ClassDef> classDefList = new ArrayList<ClassDef>();
-    public List<String> paths;
-    public int dexVersion;
-    Map<String, List<String>> dexClassMap = new LinkedHashMap<>();
-    byte[] data;
-    byte[] input;
+    private final Map<String, String> pendingSmaliMap = new ConcurrentHashMap<>();
+    private HashMap<String, ClassDef> classMap;
+    private final List<ClassDef> classDefList = new ArrayList<ClassDef>();
+    private final List<String> sourceDexPaths;
+    private int dexVersion;
+    private final Map<String, List<String>> dexClassMap = new LinkedHashMap<>();
 
     private Map<String, java.util.HashSet<String>> deletedClassJson = new HashMap<>();
     private final Map<String, String> typeToDexMap = new HashMap<>();
+    private final Map<String, Integer> dexVersionByFile = new HashMap<>();
+    private final Map<String, String> sourceFingerprintByFile = new HashMap<>();
+    private final Map<String, Integer> dexVersionByType = new HashMap<>();
+    private final Map<String, Integer> classIndexByType = new HashMap<>();
+    private long editRevision;
 
     public static class CompilationOptions {
         public String dexVersion = "Keep the same";
@@ -158,11 +140,30 @@ public class ClassTree {
     }
 
     public ClassTree(List<String> mPaths, String cacheDir) throws Exception {
-        this.paths = mPaths;
+        this.sourceDexPaths = new ArrayList<>(mPaths);
         this.workDir = cacheDir;
+        validateSourceDexPaths();
+        DexFilePublisher.recoverPendingPublication(sourceDexPaths);
         initPaths();
-        initMultiDex();
         loadDeletedClasses();
+        initMultiDex();
+    }
+
+    private void validateSourceDexPaths() throws IOException {
+        Set<String> fileNames = new HashSet<>();
+        String commonParent = null;
+        for (String path : sourceDexPaths) {
+            File source = new File(path).getCanonicalFile();
+            String name = source.getName();
+            if (!fileNames.add(name)) {
+                throw new IOException("Selected DEX files have the same name: " + name);
+            }
+            String parent = source.getParent();
+            if (commonParent == null) commonParent = parent;
+            else if (!Objects.equals(commonParent, parent)) {
+                throw new IOException("Selected DEX files must be in the same folder so compiled files are saved beside their sources.");
+            }
+        }
     }
 
     private void initPaths() {
@@ -170,47 +171,52 @@ public class ClassTree {
         if (!dir.exists()) {
             dir.mkdirs();
         }
-        ALL_CLASSES_JSON = new File(dir, "allclasses.json").getAbsolutePath();
         DELETED_CLASSES_JSON = new File(dir, "deletedclasses.json").getAbsolutePath();
-        EDITED_CLASSES_JSON = new File(dir, "editedclasses.json").getAbsolutePath();
-    }
-
-    @Deprecated
-    private void initDex() throws Exception {
-        byte[] read = read(this.Path);
-        this.input = read;
-        int verifyDexHeader = DexUtil.verifyDexHeader(read, 0);
-        this.dexVersion = verifyDexHeader;
-        dexFile = DexBackedDexFile.fromInputStream(Opcodes.forDexVersion(verifyDexHeader), new ByteArrayInputStream(input));
-        classDefList.addAll(dexFile.getClasses());
-        initClassMap();
     }
 
     private void initMultiDex() throws Exception {
-        dexFiles = new ArrayList<>();
         classDefList.clear();
         typeToDexMap.clear();
+        dexVersionByFile.clear();
+        sourceFingerprintByFile.clear();
+        dexVersionByType.clear();
+        classIndexByType.clear();
+        dexClassMap.clear();
         if (classMap == null) {
             classMap = new HashMap<>();
         } else {
             classMap.clear();
         }
 
-        for (int i = 0; i < paths.size(); i++) {
-            String path = paths.get(i);
-            byte[] read = read(path);
-            int verifyDexHeader = DexUtil.verifyDexHeader(read, 0);
+        Set<String> seenDescriptors = new HashSet<>();
+        for (int i = 0; i < sourceDexPaths.size(); i++) {
+            String path = sourceDexPaths.get(i);
+            File sourceFile = new File(path);
+            String sourceFingerprint = sha256(sourceFile);
+            int verifyDexHeader;
+            DexBackedDexFile file;
+            try (BufferedInputStream input = new BufferedInputStream(new FileInputStream(path))) {
+                verifyDexHeader = DexUtil.verifyDexHeader(input);
+                file = DexBackedDexFile.fromInputStream(Opcodes.forDexVersion(verifyDexHeader), input);
+            }
+            if (!sourceFingerprint.equals(sha256(sourceFile))) {
+                throw new IOException("DEX file changed while it was being loaded: " + sourceFile);
+            }
             this.dexVersion = verifyDexHeader;
-            DexBackedDexFile file = DexBackedDexFile.fromInputStream(Opcodes.forDexVersion(verifyDexHeader), new ByteArrayInputStream(read));
+            dexVersionByFile.put(fileNameForPath(path), verifyDexHeader);
+            sourceFingerprintByFile.put(fileNameForPath(path), sourceFingerprint);
 
-            dexFiles.add(file);
-            
             List<String> classNames = new ArrayList<>();
             String fileName = new File(path).getName();
             for (ClassDef classDef : file.getClasses()) {
                 classDefList.add(classDef);
                 String type = classDef.getType();
-                typeToDexMap.put(type, fileName);
+                if (!seenDescriptors.add(type)) {
+                    throw new IOException("Class descriptor appears in more than one selected DEX: " + type);
+                }
+                typeToDexMap.put(type, fileNameForPath(path));
+                dexVersionByType.put(type, verifyDexHeader);
+                classIndexByType.put(typeName(type), classDefList.size() - 1);
                 
                 String typeName = type.substring(1, type.length() - 1);
                 if (!isClassDeleted(typeName)) {
@@ -221,78 +227,72 @@ public class ClassTree {
             dexClassMap.put(fileName, classNames);
         }
 
-        saveAllClassesJson(); // save all classes as json
-        // initClassMap() is now integrated into the loop above
-    }
-
-    // save all classes names in JSON during loading of initial dexes
-    private void saveAllClassesJson() throws IOException {
-        File file = new File(ALL_CLASSES_JSON);
-        if (file.exists()) {
-            file.delete();
-        }
-
-        Gson gson = new Gson(); // No pretty printing for speed
-        String json = gson.toJson(dexClassMap);
-        FileWriter writer = new FileWriter(ALL_CLASSES_JSON);
-        writer.write(json);
-        writer.close();
     }
 
     // loading the deleted classes from JSON list
-    private void loadDeletedClasses() {
-        try {
-            File file = new File(DELETED_CLASSES_JSON);
-            if (file.exists()) {
-                String json = new String(read(DELETED_CLASSES_JSON));
-                Map<String, List<String>> loaded = new Gson().fromJson(json, new TypeToken<Map<String, List<String>>>() {}.getType());
-                deletedClassJson.clear();
-                for (Entry<String, List<String>> entry : loaded.entrySet()) {
-                    deletedClassJson.put(entry.getKey(), new HashSet<>(entry.getValue()));
-                }
-            } else {
-                deletedClassJson = new HashMap<>();
-            }
-        } catch (Exception e) {
+    private void loadDeletedClasses() throws IOException {
+        File file = new File(DELETED_CLASSES_JSON);
+        File backupFile = new File(DELETED_CLASSES_JSON + ".bak");
+        if (!file.exists() && backupFile.exists() && !backupFile.renameTo(file)) {
+            throw new IOException("Unable to restore deleted-class journal backup");
+        }
+        if (!file.exists()) {
             deletedClassJson = new HashMap<>();
+            return;
+        }
+
+        try {
+            String json = new String(read(DELETED_CLASSES_JSON), StandardCharsets.UTF_8);
+            Map<String, List<String>> loaded = new Gson().fromJson(
+                    json, new TypeToken<Map<String, List<String>>>() {}.getType());
+            if (loaded == null) throw new IOException("Deleted-class journal is empty");
+
+            Map<String, HashSet<String>> restored = new HashMap<>();
+            for (Entry<String, List<String>> entry : loaded.entrySet()) {
+                if (entry.getKey() == null || entry.getValue() == null) {
+                    throw new IOException("Deleted-class journal contains an invalid entry");
+                }
+                restored.put(entry.getKey(), new HashSet<>(entry.getValue()));
+            }
+            deletedClassJson = restored;
+        } catch (RuntimeException e) {
+            throw new IOException("Unable to read deleted-class journal", e);
         }
     }
 
     // saving deleted classes as JSON so that will be excluded during the dex compilation
-    private void saveDeletedClasses() {
+    private void saveDeletedClasses() throws IOException {
+        File file = new File(DELETED_CLASSES_JSON);
+        File tempFile = new File(DELETED_CLASSES_JSON + ".tmp");
+        File backupFile = new File(DELETED_CLASSES_JSON + ".bak");
         try {
-            File file = new File(DELETED_CLASSES_JSON);
-            if (file.exists()) {
-                file.delete();
-            }
-
-            Gson gson = new GsonBuilder().create();
             // Convert HashSet to List for JSON
             Map<String, List<String>> toSave = new HashMap<>();
             for (Entry<String, HashSet<String>> entry : deletedClassJson.entrySet()) {
                 toSave.put(entry.getKey(), new ArrayList<>(entry.getValue()));
             }
-            String json = gson.toJson(toSave);
-            FileWriter writer = new FileWriter(DELETED_CLASSES_JSON);
-            writer.write(json);
-            writer.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void initClassMap() {
-        if (classMap == null) classMap = new HashMap<>();
-        else classMap.clear();
-
-        for (ClassDef classDef : classDefList) {
-            String type = classDef.getType();
-            type = type.substring(1, type.length() - 1);
-            if (!isClassDeleted(type)) {
-                classMap.put(type, classDef);
+            try (FileOutputStream output = new FileOutputStream(tempFile);
+                 OutputStreamWriter writer = new OutputStreamWriter(output, StandardCharsets.UTF_8)) {
+                new Gson().toJson(toSave, writer);
+                writer.flush();
+                output.getFD().sync();
             }
+            if (backupFile.exists() && !backupFile.delete()) {
+                throw new IOException("Unable to clear old deleted-class journal backup");
+            }
+            if (file.exists() && !file.renameTo(backupFile)) {
+                throw new IOException("Unable to back up deleted-class journal");
+            }
+            if (!tempFile.renameTo(file)) {
+                if (backupFile.exists()) backupFile.renameTo(file);
+                throw new IOException("Unable to publish deleted-class journal");
+            }
+            if (backupFile.exists()) backupFile.delete();
+        } catch (IOException e) {
+            tempFile.delete();
+            if (!file.exists() && backupFile.exists()) backupFile.renameTo(file);
+            throw e;
         }
-        tree = new Tree(classMap);
     }
 
     // checking if the class is beigh deleted usefull in case of searching
@@ -306,9 +306,15 @@ public class ClassTree {
     }
 
     // removal of batch or single classes from tree node
-    public void removeClasses(List<String> classNames) {
+    public void removeClasses(List<String> classNames) throws IOException {
         if (classNames == null || classNames.isEmpty()) return;
+        synchronized (classMap) {
+            removeClassesLocked(classNames);
+            changed = true;
+        }
+    }
 
+    private void removeClassesLocked(List<String> classNames) throws IOException {
         List<String> folderPrefixes = new ArrayList<String>();
         Set<String> individualClasses = new HashSet<String>();
 
@@ -320,16 +326,31 @@ public class ClassTree {
             }
         }
 
+        List<String> removedClassNames = new ArrayList<>();
+        for (String className : classMap.keySet()) {
+            if (shouldRemove(className, individualClasses, folderPrefixes)) {
+                removedClassNames.add(className);
+            }
+        }
+        for (String className : removedClassNames) recordRemovedClass(className);
+        try {
+            saveDeletedClasses();
+        } catch (IOException e) {
+            for (String className : removedClassNames) unrecordRemovedClass(className);
+            throw e;
+        }
+
         // Optimization: Use a single pass over the map when folders are involved (O(N))
         if (!folderPrefixes.isEmpty()) {
-            Iterator<Map.Entry<String, ClassDef>> it = classMap.entrySet().iterator();
-            while (it.hasNext()) {
-                String className = it.next().getKey();
-                if (shouldRemove(className, individualClasses, folderPrefixes)) {
-                    recordRemovedClass(className);
-                    it.remove();
-                    pendingSmaliMap.remove(className);
-                    unrecordEditedClass(className);
+            synchronized (classMap) {
+                Iterator<Map.Entry<String, ClassDef>> it = classMap.entrySet().iterator();
+                while (it.hasNext()) {
+                    String className = it.next().getKey();
+                    if (shouldRemove(className, individualClasses, folderPrefixes)) {
+                        it.remove();
+                        pendingSmaliMap.remove(className);
+                        unrecordEditedClass(className);
+                    }
                 }
             }
 
@@ -351,17 +372,18 @@ public class ClassTree {
             }
         } else {
             // High-performance path for individual class removals (O(1) lookups)
-            for (String name : individualClasses) {
-                if (classMap.remove(name) != null) {
-                    recordRemovedClass(name);
+            synchronized (classMap) {
+                for (String name : individualClasses) {
+                    classMap.remove(name);
+                    pendingSmaliMap.remove(name);
+                    unrecordEditedClass(name);
                 }
-                pendingSmaliMap.remove(name);
-                unrecordEditedClass(name);
             }
         }
 
-        tree = new Tree(classMap);
-        saveDeletedClasses();
+        synchronized (classMap) {
+            editRevision++;
+        }
     }
 
     private boolean shouldRemove(String className, Set<String> individualClasses, List<String> folderPrefixes) {
@@ -373,7 +395,7 @@ public class ClassTree {
     }
 
     // remove single class only
-    public void removeClass(String className) {
+    public void removeClass(String className) throws IOException {
         removeClasses(ImmutableList.of(className));
     }
 
@@ -390,36 +412,131 @@ public class ClassTree {
         }
     }
 
+    private void unrecordRemovedClass(String type) {
+        String fileName = typeToDexMap.get("L" + type + ";");
+        if (fileName == null) return;
+        HashSet<String> deleted = deletedClassJson.get(fileName);
+        if (deleted == null) return;
+        deleted.remove(type);
+        if (deleted.isEmpty()) deletedClassJson.remove(fileName);
+    }
+
     // save smali according to the class and its content
     // it's just a mapping way to preserve  smali data in memeory, but it's not a good way it may cause self kill app like situation and mt manager never do like this
     public void saveSmali(String type, String smali) {
-        pendingSmaliMap.put(type, smali);
-        recordEditedClass(type);
-        DexEditorActivity.isChanged = true;
-        DexEditorActivity.isSaved = false;
+        synchronized (classMap) {
+            pendingSmaliMap.put(type, smali);
+            recordEditedClass(type);
+            editRevision++;
+            changed = true;
+        }
     }
 
     // save class def to the main node o the dex and record the changes classes
     public void saveClassDef(ClassDef classDef) {
+        commitClassDefs(getEditRevision(), Collections.singletonList(classDef));
+    }
+
+    private void saveClassDefLocked(ClassDef classDef) {
         String type = classDef.getType().substring(1, classDef.getType().length() - 1);
         pendingSmaliMap.remove(type);
-
-        // Update classMap
         classMap.put(type, classDef);
-
-        // Update classDefList
-        for (int i = 0; i < classDefList.size(); i++) {
-            ClassDef existingDef = classDefList.get(i);
-            String existingType = existingDef.getType().substring(1, existingDef.getType().length() - 1);
-            if (existingType.equals(type)) {
-                classDefList.set(i, classDef);
-                break;
+        Integer classIndex = classIndexByType.get(type);
+        synchronized (classDefList) {
+            if (classIndex != null && classIndex >= 0 && classIndex < classDefList.size()) {
+                classDefList.set(classIndex, classDef);
             }
         }
-
         recordEditedClass(type);
-        DexEditorActivity.isChanged = true;
-        DexEditorActivity.isSaved = false;
+        editRevision++;
+        changed = true;
+    }
+
+    public boolean hasUnsavedChanges() {
+        return changed;
+    }
+
+    public void clearUnsavedChanges() {
+        changed = false;
+    }
+
+    public long getEditRevision() {
+        HashMap<String, ClassDef> currentClassMap = classMap;
+        if (currentClassMap == null) throw new IllegalStateException("No DEX is open.");
+        synchronized (currentClassMap) {
+            if (classMap != currentClassMap) throw new IllegalStateException("No DEX is open.");
+            return editRevision;
+        }
+    }
+
+    public EditSnapshot snapshotEditState() {
+        HashMap<String, ClassDef> currentClassMap = classMap;
+        if (currentClassMap == null) throw new IllegalStateException("No DEX is open.");
+        synchronized (currentClassMap) {
+            if (classMap != currentClassMap) throw new IllegalStateException("No DEX is open.");
+            return new EditSnapshot(editRevision, currentClassMap);
+        }
+    }
+
+    public ClassDef getClassDef(String type) {
+        HashMap<String, ClassDef> currentClassMap = classMap;
+        if (currentClassMap == null) return null;
+        synchronized (currentClassMap) {
+            return classMap == currentClassMap ? currentClassMap.get(type) : null;
+        }
+    }
+
+    public boolean containsClass(String type) {
+        HashMap<String, ClassDef> currentClassMap = classMap;
+        if (currentClassMap == null) return false;
+        synchronized (currentClassMap) {
+            return classMap == currentClassMap && currentClassMap.containsKey(type);
+        }
+    }
+
+    public List<ClassDef> getClassDefsSnapshot() {
+        return new ArrayList<>(snapshotEditState().getClassDefs().values());
+    }
+
+    public static final class EditSnapshot {
+        private final long revision;
+        private final Map<String, ClassDef> classDefs;
+
+        private EditSnapshot(long revision, Map<String, ClassDef> classDefs) {
+            this.revision = revision;
+            this.classDefs = Collections.unmodifiableMap(new HashMap<>(classDefs));
+        }
+
+        public long getRevision() { return revision; }
+        public Map<String, ClassDef> getClassDefs() { return classDefs; }
+    }
+
+    public void commitClassDefs(long expectedRevision, List<ClassDef> classDefs) {
+        if (classDefs == null) throw new IllegalArgumentException("Replacement classes cannot be null.");
+        HashMap<String, ClassDef> currentClassMap = classMap;
+        if (currentClassMap == null) throw new IllegalStateException("No DEX is open.");
+        synchronized (currentClassMap) {
+            if (classMap != currentClassMap) throw new IllegalStateException("No DEX is open.");
+            if (editRevision != expectedRevision) {
+                throw new IllegalStateException("The DEX changed after patch preview. Preview the patch again before applying it.");
+            }
+            Set<String> replacementTypes = new HashSet<>();
+            for (ClassDef classDef : classDefs) {
+                if (classDef == null) throw new IllegalArgumentException("A replacement class cannot be null.");
+                String descriptor = classDef.getType();
+                if (descriptor == null || !descriptor.startsWith("L") || !descriptor.endsWith(";")) {
+                    throw new IllegalArgumentException("Invalid replacement class descriptor: " + descriptor);
+                }
+                String type = descriptor.substring(1, descriptor.length() - 1);
+                if (!currentClassMap.containsKey(type)) {
+                    throw new IllegalArgumentException("Cannot replace class that is not in the open DEX: " + descriptor);
+                }
+                if (!replacementTypes.add(type)) {
+                    throw new IllegalArgumentException("Replacement contains duplicate class: " + descriptor);
+                }
+            }
+            for (ClassDef classDef : classDefs) saveClassDefLocked(classDef);
+        }
     }
 
     public String getSmaliByType(ClassDef classDef) throws Exception {
@@ -463,6 +580,19 @@ public class ClassTree {
         return "unknown.dex";
     }
 
+    public int getDexVersionForClass(String className) {
+        Integer version = dexVersionByType.get("L" + className + ";");
+        return version == null ? dexVersion : version;
+    }
+
+    private static String typeName(String descriptor) {
+        return descriptor.substring(1, descriptor.length() - 1);
+    }
+
+    private static String fileNameForPath(String path) {
+        return new File(path).getName();
+    }
+
     // record the edited classes
     private void recordEditedClass(String type) {
         String fileName = typeToDexMap.get("L" + type + ";");
@@ -489,302 +619,295 @@ public class ClassTree {
     // save all loaded dexes
     @SuppressLint("SdCardPath")
     public void saveAllDexFiles(DexSaveProgress dexSaveProgress) throws Exception {
-        if (dexClassMap == null || dexClassMap.isEmpty()) return;
-
-        int total = dexClassMap.size();
-        int current = 1;
-
-        int targetDexVersion = this.dexVersion;
-        if (!compilationOptions.dexVersion.equals("Keep the same")) {
-            try {
-                targetDexVersion = Integer.parseInt(compilationOptions.dexVersion);
-            } catch (Exception ignored) {}
+        if (dexClassMap.isEmpty()) {
+            changed = false;
+            return;
         }
 
-        final int finalTargetDexVersion = targetDexVersion;
-        Opcodes opcodes = Opcodes.forDexVersion(targetDexVersion);
-
-        boolean forceCompileAll = compilationOptions.removeAllDebug || compilationOptions.removeDebugSource || 
-                                 compilationOptions.removeDebugLine || compilationOptions.removeDebugParam || 
-                                 compilationOptions.removeDebugPrologue || compilationOptions.removeDebugLocal ||
-                                 !compilationOptions.dexVersion.equals("Keep the same");
-
-        int numThreads = Runtime.getRuntime().availableProcessors();
-
-        for (Entry<String, List<String>> entry : dexClassMap.entrySet()) {
-            String fileName = entry.getKey();
-            dexSaveProgress.onTitle(fileName + " (" + current + "/" + total + ")");
-
-            boolean isTouched = forceCompileAll || deletedClassJson.containsKey(fileName) || editedClassMap.containsKey(fileName);
-            if (!isTouched) {
+        List<PreparedDex> preparedDexes = new ArrayList<>();
+        boolean forceCompileAll = requiresFullDexRewrite();
+        try {
+            int current = 1;
+            int total = dexClassMap.size();
+            for (Entry<String, List<String>> entry : dexClassMap.entrySet()) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException("DEX save cancelled.");
+                String fileName = entry.getKey();
+                dexSaveProgress.onTitle(fileName + " (" + current + "/" + total + ")");
+                PreparedDex prepared = prepareDexFile(fileName, entry.getValue(), forceCompileAll, dexSaveProgress);
+                if (prepared != null) preparedDexes.add(prepared);
                 current++;
-                continue;
             }
 
-            DexBuilder dexBuilder = new DexBuilder(opcodes);
-            dexBuilder.setIgnoreMethodAndFieldError(true);
-
-            List<String> classNames = entry.getValue();
-            int classCount = classNames.size();
-            AtomicInteger processed = new AtomicInteger(0);
-            ExecutorService executor = Executors.newFixedThreadPool(numThreads);
-            
-            final Exception[] threadException = {null};
-
-            for (String rawType : classNames) {
-                if (threadException[0] != null) break;
-                
-                executor.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            final String type = rawType.substring(1, rawType.length() - 1);
-
-                            if (deletedClassJson.containsKey(fileName) && Objects.requireNonNull(deletedClassJson.get(fileName)).contains(type)) {
-                                int p = processed.incrementAndGet();
-                                if (p % 100 == 0 || p == classCount) {
-                                    dexSaveProgress.onProgress(p, classCount);
-                                }
-                                return;
-                            }
-
-                            if (pendingSmaliMap.containsKey(type)) {
-                                // Message update is tricky in parallel, but we can do it occasionally
-                                if (processed.get() % 50 == 0) {
-                                    dexSaveProgress.onMessage("Assembling " + type + "...");
-                                }
-                                
-                                try {
-                                    final ClassDef assembledDef = Smali.assemble(pendingSmaliMap.get(type), new SmaliOptions(), finalTargetDexVersion);
-                                    synchronized (Collections.unmodifiableMap(classMap)) {
-                                        classMap.put(type, assembledDef);
-                                    }
-                                    synchronized (pendingSmaliMap) {
-                                        pendingSmaliMap.remove(type);
-                                    }
-                                    
-                                    // Update classDefList (sequential or atomic)
-                                    synchronized (classDefList) {
-                                        for (int j = 0; j < classDefList.size(); j++) {
-                                            if (classDefList.get(j).getType().equals(rawType)) {
-                                                classDefList.set(j, assembledDef);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } catch (final Exception e) {
-                                    synchronized (threadException) {
-                                        threadException[0] = new Exception("COMPILE_ERROR:" + type + ":" + e.getMessage()); }
-                                }
-                            }
-
-                            if (threadException[0] != null) return;
-
-                            final ClassDef classDef;
-                            synchronized (Collections.unmodifiableMap(classMap)) {
-                                classDef = classMap.get(type);
-                            }
-                            
-                            if (classDef != null) {
-                                // Apply compilation options
-                                ClassDef strippedDef = classDef;
-                                if (compilationOptions.removeAllDebug || compilationOptions.removeDebugSource || 
-                                    compilationOptions.removeDebugLine || compilationOptions.removeDebugParam || 
-                                    compilationOptions.removeDebugPrologue || compilationOptions.removeDebugLocal) {
-                                    strippedDef = new DebugInfoStripper(classDef, compilationOptions);
-                                }
-                                
-                                dexBuilder.internClassDef(strippedDef);
-                            }
-                            
-                            int p = processed.incrementAndGet();
-                            dexSaveProgress.onMessage("Compiling...");
-                            if (p % 100 == 0 || p == classCount) {
-                                dexSaveProgress.onProgress(p, classCount);
-                            }
-                        } catch (final Exception e) {
-                            synchronized (threadException) { threadException[0] = e; }
-                        }
-                    }
-                });
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException("DEX save cancelled.");
+            if (!preparedDexes.isEmpty()) {
+                verifySourceDexesUnchanged();
+                DexFilePublisher.publishAtomically(preparedDexes);
+                commitPreparedDexes(preparedDexes);
             }
-
-            executor.shutdown();
-            executor.awaitTermination(1, TimeUnit.HOURS);
-            
-            if (threadException[0] != null) {
-                throw threadException[0];
+            changed = false;
+        } finally {
+            for (PreparedDex prepared : preparedDexes) {
+                if (prepared.tempFile.exists()) prepared.tempFile.delete();
             }
+        }
+    }
 
-            dexSaveProgress.onMessage("Writing file...");
-            try {
-                // Estimate size for buffer to avoid repeated allocations
-                MemoryDataStore memoryDataStore = new MemoryDataStore(classCount * 512); 
-                dexBuilder.writeTo(memoryDataStore);
-                byte[] result = Arrays.copyOf(memoryDataStore.getBuffer(), memoryDataStore.getSize());
+    private boolean requiresFullDexRewrite() {
+        return compilationOptions.removeAllDebug || compilationOptions.removeDebugSource
+                || compilationOptions.removeDebugLine || compilationOptions.removeDebugParam
+                || compilationOptions.removeDebugPrologue || compilationOptions.removeDebugLocal
+                || !compilationOptions.dexVersion.equals("Keep the same");
+    }
 
-                String outputDir;
-                if (paths != null && !paths.isEmpty()) {
-                    outputDir = new File(paths.get(0)).getParent();
-                } else {
-                    outputDir = "/sdcard";
-                }
-                File outFile = new File(outputDir, fileName);
-                File bakFile = new File(outFile.getAbsolutePath() + ".bak");
-
-                if (outFile.exists()) {
-                    // Fast backup using NIO or simple copy
-                    FileUtil.copyFile(outFile.getAbsolutePath(), bakFile.getAbsolutePath());
-                    outFile.delete();
-                }
-
-                // Fast write
-                FileOutputStream fos = new FileOutputStream(outFile);
-                fos.write(result);
-                fos.close();
-                data = result;
-            } catch (Exception e) {
-                e.printStackTrace();
+    private void verifySourceDexesUnchanged() throws IOException {
+        for (String path : sourceDexPaths) {
+            String fileName = fileNameForPath(path);
+            String expected = sourceFingerprintByFile.get(fileName);
+            if (expected == null || !expected.equals(sha256(new File(path)))) {
+                throw new IOException("Source DEX changed after it was opened; reload it before saving: " + fileName);
             }
+        }
+    }
 
-            current++;
+    private static String sha256(File file) throws IOException {
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+        try (InputStream input = new FileInputStream(file)) {
+            byte[] buffer = new byte[64 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count);
+        }
+        char[] hex = new char[64];
+        char[] digits = "0123456789abcdef".toCharArray();
+        int offset = 0;
+        for (byte value : digest.digest()) {
+            int unsigned = value & 0xff;
+            hex[offset++] = digits[unsigned >>> 4];
+            hex[offset++] = digits[unsigned & 0x0f];
+        }
+        return new String(hex);
+    }
+
+    private PreparedDex prepareDexFile(String fileName, List<String> classNames,
+                                       boolean forceCompileAll, DexSaveProgress progress) throws Exception {
+        if (!forceCompileAll && !deletedClassJson.containsKey(fileName) && !editedClassMap.containsKey(fileName)) {
+            return null;
         }
 
-        DexEditorActivity.isChanged = false;
-        DexEditorActivity.isSaved = true;
+        Integer originalVersion = dexVersionByFile.get(fileName);
+        int targetVersion = compilationOptions.dexVersion.equals("Keep the same")
+                ? (originalVersion == null ? dexVersion : originalVersion)
+                : Integer.parseInt(compilationOptions.dexVersion);
+        Set<String> deleted = deletedClassJson.get(fileName);
+        Map<String, String> pendingForDex = collectPendingSmali(classNames, deleted);
+        Map<String, ClassDef> assembledPending = assemblePendingSmali(pendingForDex, targetVersion, fileName, progress);
+        DexPool dexPool = new DexPool(Opcodes.forDexVersion(targetVersion));
+        internDexClasses(dexPool, classNames, deleted, assembledPending, progress);
+        return stageDexFile(fileName, targetVersion, dexPool, assembledPending, pendingForDex, progress);
+    }
+
+    private Map<String, String> collectPendingSmali(List<String> classNames, Set<String> deleted) {
+        Map<String, String> pendingForDex = new HashMap<>();
+        for (String rawType : classNames) {
+            String type = typeName(rawType);
+            if (deleted != null && deleted.contains(type)) continue;
+            String smali = pendingSmaliMap.get(type);
+            if (smali != null) pendingForDex.put(type, smali);
+        }
+        return pendingForDex;
+    }
+
+    private Map<String, ClassDef> assemblePendingSmali(Map<String, String> pendingForDex, int targetVersion,
+                                                        String fileName, DexSaveProgress progress) throws Exception {
+        ConcurrentMap<String, ClassDef> assembledPending = new ConcurrentHashMap<>();
+        if (pendingForDex.isEmpty()) return assembledPending;
+
+        AtomicReference<Exception> compileError = new AtomicReference<>();
+        // ponytail: cap parallel assembly to bound ClassDef memory; benchmark before raising the ceiling.
+        int workerCount = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors()));
+        ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+        for (Map.Entry<String, String> pending : pendingForDex.entrySet()) {
+            if (Thread.currentThread().isInterrupted()) {
+                executor.shutdownNow();
+                throw new InterruptedException("DEX save cancelled.");
+            }
+            executor.execute(() -> {
+                if (compileError.get() != null || Thread.currentThread().isInterrupted()) return;
+                try {
+                    progress.onMessage("Assembling " + pending.getKey() + "...");
+                    ClassDef assembled = Smali.assemble(pending.getValue(), new SmaliOptions(), targetVersion);
+                    if (!("L" + pending.getKey() + ";").equals(assembled.getType())) {
+                        throw new IllegalArgumentException("Edited class descriptor does not match " + pending.getKey());
+                    }
+                    assembledPending.put(pending.getKey(), assembled);
+                } catch (Exception e) {
+                    if ("CANCELLED".equals(e.getMessage()) || e instanceof InterruptedException) {
+                        compileError.compareAndSet(null, e);
+                    } else {
+                        compileError.compareAndSet(null,
+                                new Exception("COMPILE_ERROR:" + pending.getKey() + ":" + e.getMessage(), e));
+                    }
+                }
+            });
+        }
+        executor.shutdown();
+        boolean terminated;
+        try {
+            terminated = executor.awaitTermination(1, TimeUnit.HOURS);
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+            throw e;
+        }
+        if (!terminated) {
+            executor.shutdownNow();
+            throw new IOException("Timed out assembling edited classes in " + fileName);
+        }
+        if (compileError.get() != null) throw compileError.get();
+        return assembledPending;
+    }
+
+    private void internDexClasses(DexPool dexPool, List<String> classNames, Set<String> deleted,
+                                  Map<String, ClassDef> assembledPending, DexSaveProgress progress)
+            throws InterruptedException {
+        int processed = 0;
+        for (String rawType : classNames) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException("DEX save cancelled.");
+            String type = typeName(rawType);
+            if (deleted == null || !deleted.contains(type)) {
+                ClassDef classDef = assembledPending.get(type);
+                if (classDef == null) classDef = classMap.get(type);
+                if (classDef != null) {
+                    if (hasDebugStrippingOptions()) classDef = new DebugInfoStripper(classDef, compilationOptions);
+                    dexPool.internClass(classDef);
+                }
+            }
+            processed++;
+            if (processed % 100 == 0 || processed == classNames.size()) {
+                progress.onMessage("Compiling...");
+                progress.onProgress(processed, classNames.size());
+            }
+        }
+    }
+
+    private boolean hasDebugStrippingOptions() {
+        return compilationOptions.removeAllDebug || compilationOptions.removeDebugSource
+                || compilationOptions.removeDebugLine || compilationOptions.removeDebugParam
+                || compilationOptions.removeDebugPrologue || compilationOptions.removeDebugLocal;
+    }
+
+    private PreparedDex stageDexFile(String fileName, int targetVersion, DexPool dexPool,
+                                     Map<String, ClassDef> assembledPending, Map<String, String> pendingForDex,
+                                     DexSaveProgress progress) throws IOException {
+        progress.onMessage("Writing file...");
+        String outputDir = sourceDexPaths != null && !sourceDexPaths.isEmpty()
+                ? new File(sourceDexPaths.get(0)).getParent()
+                : Environment.getExternalStorageDirectory().getPath();
+        File outputDirectory = new File(outputDir);
+        if (!outputDirectory.exists() && !outputDirectory.mkdirs()) {
+            throw new IOException("Cannot create output directory: " + outputDir);
+        }
+        File outFile = new File(outputDirectory, fileName);
+        File tempFile = File.createTempFile(fileName + ".", ".partial", outputDirectory);
+        boolean staged = false;
+        try {
+            FileDataStore store = new FileDataStore(tempFile);
+            try {
+                dexPool.writeTo(store);
+            } finally {
+                store.close();
+            }
+            staged = true;
+            return new PreparedDex(fileName, targetVersion, outFile, tempFile, sha256(tempFile),
+                    assembledPending, pendingForDex);
+        } finally {
+            if (!staged && tempFile.exists()) tempFile.delete();
+        }
+    }
+
+    private void commitPreparedDexes(List<PreparedDex> preparedDexes) {
+        synchronized (classMap) {
+            synchronized (classDefList) {
+                for (PreparedDex prepared : preparedDexes) {
+                    for (Map.Entry<String, ClassDef> assembled : prepared.assembledPending.entrySet()) {
+                        String type = assembled.getKey();
+                        classMap.put(type, assembled.getValue());
+                        Integer index = classIndexByType.get(type);
+                        if (index != null) classDefList.set(index, assembled.getValue());
+                        if (Objects.equals(pendingSmaliMap.get(type), prepared.pendingSmali.get(type))) {
+                            pendingSmaliMap.remove(type);
+                        }
+                        dexVersionByType.put("L" + type + ";", prepared.targetVersion);
+                    }
+                    if (!prepared.assembledPending.isEmpty()) editRevision++;
+                    dexVersionByFile.put(prepared.fileName, prepared.targetVersion);
+                    sourceFingerprintByFile.put(prepared.fileName, prepared.fingerprint);
+                }
+            }
+        }
+    }
+
+    private static final class PreparedDex extends DexFilePublisher.StagedFile {
+        final int targetVersion;
+        final String fingerprint;
+        final Map<String, ClassDef> assembledPending;
+        final Map<String, String> pendingSmali;
+
+        PreparedDex(String fileName, int targetVersion, File outputFile, File tempFile, String fingerprint,
+                    Map<String, ClassDef> assembledPending, Map<String, String> pendingSmali) {
+            super(fileName, outputFile, tempFile);
+            this.targetVersion = targetVersion;
+            this.fingerprint = fingerprint;
+            this.assembledPending = assembledPending;
+            this.pendingSmali = pendingSmali;
+        }
     }
 
     public List<TreeNode> buildFullTree() {
-        Map<String, TreeNode> allNodes = new HashMap<>();
-        List<TreeNode> roots = new ArrayList<>();
-
-        List<String> sortedKeys = new ArrayList<>(classMap.keySet());
-        Collections.sort(sortedKeys);
-
-        for (String type : sortedKeys) {
-            String[] parts = type.split("/");
-            TreeNode parent = null;
-            String pathStr = "";
-
-            for (int i = 0; i < parts.length; i++) {
-                String part = parts[i];
-                if (pathStr.isEmpty()) {
-                    pathStr = part;
-                } else {
-                    pathStr = pathStr + "/" + part;
-                }
-                boolean isLast = (i == parts.length - 1);
-
-                TreeNode node = allNodes.get(pathStr);
-                if (node == null) {
-                    node = new TreeNode(part, pathStr, i, !isLast);
-                    allNodes.put(pathStr, node);
-                    if (parent == null) {
-                        roots.add(node);
-                    } else {
-                        parent.addChild(node);
-                    }
-                } else {
-                    if (!isLast) {
-                        node.setDirectory(true);
-                    }
-                }
-                parent = node;
-            }
+        List<String> sortedKeys;
+        synchronized (classMap) {
+            sortedKeys = new ArrayList<>(classMap.keySet());
         }
-        sortNodes(roots);
-        compactTree(roots);
-        return roots;
+        Collections.sort(sortedKeys);
+        return ClassTreeBuilder.build(sortedKeys);
     }
 
-    public Map<String, String> getPendingSmaliMap() {
-        return pendingSmaliMap;
-    }
+    public boolean hasPendingSmali(String type) { return pendingSmaliMap.containsKey(type); }
+
+    public String getPendingSmali(String type) { return pendingSmaliMap.get(type); }
 
     public List<TreeNode> buildEditedFullTree() {
-        Map<String, TreeNode> allNodes = new HashMap<>();
-        List<TreeNode> roots = new ArrayList<>();
-
         List<String> editedClasses = new ArrayList<>();
         for (java.util.HashSet<String> classes : editedClassMap.values()) {
             editedClasses.addAll(classes);
         }
         Collections.sort(editedClasses);
-
-        for (String type : editedClasses) {
-            String[] parts = type.split("/");
-            TreeNode parent = null;
-            String pathStr = "";
-
-            for (int i = 0; i < parts.length; i++) {
-                String part = parts[i];
-                pathStr = pathStr.isEmpty() ? part : pathStr + "/" + part;
-                boolean isLast = (i == parts.length - 1);
-
-                TreeNode node = allNodes.get(pathStr);
-                if (node == null) {
-                    node = new TreeNode(part, pathStr, i, !isLast);
-                    allNodes.put(pathStr, node);
-                    if (parent == null) {
-                        roots.add(node);
-                    } else {
-                        parent.addChild(node);
-                    }
-                } else {
-                    if (!isLast) {
-                        node.setDirectory(true);
-                    }
-                }
-                parent = node;
-            }
-        }
-        sortNodes(roots);
-        compactTree(roots);
-        return roots;
-    }
-
-    private void sortNodes(List<TreeNode> nodes) {
-        nodes.sort(new Comparator<TreeNode>() {
-            @Override
-            public int compare(TreeNode a, TreeNode b) {
-                if (a.isDirectory() != b.isDirectory()) {
-                    return a.isDirectory() ? -1 : 1;
-                }
-                return a.getName().compareToIgnoreCase(b.getName());
-            }
-        });
-        for (TreeNode node : nodes) {
-            if (!node.getChildren().isEmpty()) {
-                sortNodes(node.getChildren());
-            }
-        }
-    }
-
-    private void compactTree(List<TreeNode> nodes) {
-        for (TreeNode node : nodes) {
-            if (node.isDirectory()) {
-                List<TreeNode> children = node.getChildren();
-                while (children.size() == 1 && children.get(0).isDirectory()) {
-                    TreeNode singleChild = children.get(0);
-                    node.setName(node.getName() + "." + singleChild.getName());
-                    node.setFullName(singleChild.getFullName());
-                    node.setChildren(singleChild.getChildren());
-                    children = node.getChildren();
-                }
-                compactTree(children);
-            }
-        }
+        return ClassTreeBuilder.build(editedClasses);
     }
 
     public void clearAll() {
-        if (classMap != null) classMap.clear();
-        classMap = null;
-        path = null;
-        dexFile = null;
-        curClassDef = null;
-        tree = null;
-        curFile = null;
-        
+        changed = false;
+        if (classMap != null) {
+            HashMap<String, ClassDef> currentClassMap = classMap;
+            synchronized (currentClassMap) {
+                currentClassMap.clear();
+                editRevision++;
+                if (classMap == currentClassMap) classMap = null;
+            }
+        } else {
+            editRevision++;
+        }
+        classDefList.clear();
+        pendingSmaliMap.clear();
+        classIndexByType.clear();
+        typeToDexMap.clear();
+        dexVersionByFile.clear();
+        sourceFingerprintByFile.clear();
+        dexVersionByType.clear();
         // Clean up cache directory
         if (workDir != null) {
             deleteRecursive(new File(workDir));
@@ -803,92 +926,22 @@ public class ClassTree {
     }
 
     public byte[] read(String fileName) throws IOException {
-        InputStream is = new FileInputStream(fileName);
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        byte[] buffer = new byte[4096];
-        int n;
-        while ((n = is.read(buffer)) != -1) {
-            bos.write(buffer, 0, n);
+        try (InputStream input = new FileInputStream(fileName);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[64 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+            return output.toByteArray();
         }
-        is.close();
-        return bos.toByteArray();
-    }
-
-    public void saveFile(byte[] bfile, String filePath) throws Exception {
-        File file = new File(filePath);
-        File dir = file.getParentFile();
-        if (dir != null && !dir.exists()) {
-            dir.mkdirs();
-        }
-
-        FileOutputStream fos = new FileOutputStream(file);
-        BufferedOutputStream bos = new BufferedOutputStream(fos);
-        bos.write(bfile);
-        bos.close();
     }
 
     public int getOpenedDexVersion() {
-        return this.dexVersion;
+        return dexVersion;
     }
 
     public List<String> getAllStrings() {
-        HashSet<String> allStrings = new HashSet<>();
-        
-        synchronized (Collections.unmodifiableMap(classMap)) {
-            for (ClassDef classDef : classMap.values()) {
-                // From Fields
-                for (Field field : classDef.getFields()) {
-                    EncodedValue initialValue = field.getInitialValue();
-                    if (initialValue instanceof StringEncodedValue) {
-                        allStrings.add(((StringEncodedValue) initialValue).getValue());
-                    }
-                }
-                
-                // From Methods
-                for (Method method : classDef.getMethods()) {
-                    MethodImplementation impl = method.getImplementation();
-                    if (impl != null) {
-                        for (Instruction inst : impl.getInstructions()) {
-                            if (inst instanceof ReferenceInstruction) {
-                                Reference ref = ((ReferenceInstruction) inst).getReference();
-                                if (ref instanceof StringReference) {
-                                    allStrings.add(((StringReference) ref).getString());
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // From Annotations
-                collectStringsFromAnnotations(classDef.getAnnotations(), allStrings);
-            }
-        }
-        
-        List<String> result = new ArrayList<>(allStrings);
-        Collections.sort(result);
-        return result;
-    }
-
-    private void collectStringsFromAnnotations(Set<? extends Annotation> annotations, Set<String> allStrings) {
-        if (annotations == null) return;
-        for (Annotation annotation : annotations) {
-            for (AnnotationElement element : annotation.getElements()) {
-                collectStringsFromEncodedValue(element.getValue(), allStrings);
-            }
-        }
-    }
-
-    private void collectStringsFromEncodedValue(EncodedValue value, Set<String> allStrings) {
-        if (value instanceof StringEncodedValue) {
-            allStrings.add(((StringEncodedValue) value).getValue());
-        } else if (value instanceof AnnotationEncodedValue) {
-            for (AnnotationElement element : ((AnnotationEncodedValue) value).getElements()) {
-                collectStringsFromEncodedValue(element.getValue(), allStrings);
-            }
-        } else if (value instanceof ArrayEncodedValue) {
-            for (EncodedValue subValue : ((ArrayEncodedValue) value).getValue()) {
-                collectStringsFromEncodedValue(subValue, allStrings);
-            }
+        synchronized (classMap) {
+            return DexStringCollector.collect(classMap.values());
         }
     }
 
@@ -900,228 +953,6 @@ public class ClassTree {
         void onTitle(String title);
     }
 
-    public class Tree {
-        private final List<Map<String, String>> node;
-        private final Comparator<String> sortByType = new Comparator<String>() {
-            @Override
-            public int compare(String a, String b) {
-                if (isDirectory(a) && !isDirectory(b)) return -1;
-                if (!isDirectory(a) && isDirectory(b)) return 1;
-                return a.toLowerCase().compareTo(b.toLowerCase());
-            }
-        };
-
-        @SuppressLint("SuspiciousIndentation")
-        public Tree(HashMap<String, ClassDef> classMap) {
-            if (path == null) {
-                path = new Stack<>();
-                dep = 0;
-            }
-            Set<String> names = classMap.keySet();
-            node = new ArrayList<>();
-
-            for (String name : names) {
-                String[] token = name.split("/");
-                String tmp = "";
-                for (int i = 0; i < token.length; i++) {
-                    String value = token[i];
-                    if (i >= node.size()) node.add(new HashMap<>());
-                    Map<String, String> map = node.get(i);
-                    if (classMap.containsKey(tmp + value) && i + 1 == token.length)
-                        map.put(tmp + value, tmp);
-                    else
-                        map.put(tmp + value + "/", tmp);
-                    tmp += value + "/";
-                }
-            }
-        }
-
-        public ArrayList<String> list(String parent) {
-            ArrayList<String> str = new ArrayList<>();
-            while (dep >= 0 && node.size() > 0) {
-                Map<String, String> map = node.get(dep);
-                if (map != null) {
-                    for (String key : map.keySet()) {
-                        if (parent.equals(map.get(key))) {
-                            int index = key.endsWith("/") ? key.lastIndexOf("/", key.length() - 2) : key.lastIndexOf("/");
-                            str.add(index != -1 ? key.substring(index + 1) : key);
-                        }
-                    }
-                    break;
-                }
-                pop();
-            }
-            str.sort(sortByType);
-            return str;
-        }
-
-        public ArrayList<String> list() {
-            return list(getCurPath());
-        }
-
-        private void push(String name) {
-            dep++;
-            path.push(name);
-        }
-
-        private String pop() {
-            if (dep > 0) {
-                dep--;
-                return path.pop();
-            }
-            return null;
-        }
-
-        public String getCurPath() {
-            return join(path, "/");
-        }
-
-        public boolean isDirectory(String name) {
-            return name.endsWith("/");
-        }
-
-        private String join(Stack<String> stack, String d) {
-            StringBuilder sb = new StringBuilder();
-            for (String s : stack) sb.append(s);
-            return sb.toString();
-        }
-    }
-
     // helper classe for debug info Striping
-    private class DebugInfoStripper implements com.android.tools.smali.dexlib2.iface.ClassDef {
-        private final ClassDef delegate;
-        private final CompilationOptions options;
-
-        public DebugInfoStripper(ClassDef delegate, CompilationOptions options) {
-            this.delegate = delegate;
-            this.options = options;
-        }
-
-        @Override @javax.annotation.Nonnull public String getType() { return delegate.getType(); }
-        @Override public int getAccessFlags() { return delegate.getAccessFlags(); }
-        @Override @javax.annotation.Nullable public String getSuperclass() { return delegate.getSuperclass(); }
-        @Override @javax.annotation.Nonnull public List<String> getInterfaces() { return delegate.getInterfaces(); }
-        @Override @javax.annotation.Nullable public String getSourceFile() { return options.removeDebugSource || options.removeAllDebug ? null : delegate.getSourceFile(); }
-        @Override @javax.annotation.Nonnull public Set<? extends com.android.tools.smali.dexlib2.iface.Annotation> getAnnotations() { return delegate.getAnnotations(); }
-        @Override @javax.annotation.Nonnull public Iterable<? extends com.android.tools.smali.dexlib2.iface.Field> getStaticFields() { return delegate.getStaticFields(); }
-        @Override @javax.annotation.Nonnull public Iterable<? extends com.android.tools.smali.dexlib2.iface.Field> getInstanceFields() { return delegate.getInstanceFields(); }
-        @Override @javax.annotation.Nonnull public Iterable<? extends com.android.tools.smali.dexlib2.iface.Field> getFields() { return delegate.getFields(); }
-
-        @Override @javax.annotation.Nonnull public Iterable<? extends com.android.tools.smali.dexlib2.iface.Method> getDirectMethods() {
-            return wrapMethods(delegate.getDirectMethods());
-        }
-
-        @Override @javax.annotation.Nonnull public Iterable<? extends com.android.tools.smali.dexlib2.iface.Method> getVirtualMethods() {
-            return wrapMethods(delegate.getVirtualMethods());
-        }
-
-        @Override @javax.annotation.Nonnull public Iterable<? extends com.android.tools.smali.dexlib2.iface.Method> getMethods() {
-            return wrapMethods(delegate.getMethods());
-        }
-
-        @Override public int compareTo(@javax.annotation.Nonnull CharSequence o) { return delegate.compareTo(o); }
-        @Override public void validateReference() throws com.android.tools.smali.dexlib2.iface.reference.Reference.InvalidReferenceException { delegate.validateReference(); }
-        @Override public int length() { return delegate.length(); }
-        @Override public char charAt(int index) { return delegate.charAt(index); }
-        @NonNull
-        @Override public CharSequence subSequence(int start, int end) { return delegate.subSequence(start, end); }
-        @Override @javax.annotation.Nonnull public String toString() { return delegate.toString(); }
-
-        private Iterable<? extends com.android.tools.smali.dexlib2.iface.Method> wrapMethods(Iterable<? extends com.android.tools.smali.dexlib2.iface.Method> methods) {
-            List<com.android.tools.smali.dexlib2.iface.Method> wrapped = new ArrayList<>();
-            for (com.android.tools.smali.dexlib2.iface.Method method : methods) {
-                wrapped.add(new MethodStripper(method, options));
-            }
-            return wrapped;
-        }
-    }
-
-    // Method stripper
-    private class MethodStripper implements com.android.tools.smali.dexlib2.iface.Method {
-        private final com.android.tools.smali.dexlib2.iface.Method delegate;
-        private final CompilationOptions options;
-
-        public MethodStripper(com.android.tools.smali.dexlib2.iface.Method delegate, CompilationOptions options) {
-            this.delegate = delegate;
-            this.options = options;
-        }
-
-        @Override @javax.annotation.Nonnull public String getDefiningClass() { return delegate.getDefiningClass(); }
-        @Override @javax.annotation.Nonnull public String getName() { return delegate.getName(); }
-        @Override @javax.annotation.Nonnull public List<? extends com.android.tools.smali.dexlib2.iface.MethodParameter> getParameters() {
-            if (options.removeDebugParam || options.removeAllDebug) {
-                List<com.android.tools.smali.dexlib2.iface.MethodParameter> params = new ArrayList<>();
-                for (com.android.tools.smali.dexlib2.iface.MethodParameter p : delegate.getParameters()) {
-                    params.add(new com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter(p.getType(), null, null));
-                }
-                return params;
-            }
-            return delegate.getParameters();
-        }
-        @Override @javax.annotation.Nonnull public List<? extends CharSequence> getParameterTypes() { return delegate.getParameterTypes(); }
-        @Override @javax.annotation.Nonnull public String getReturnType() { return delegate.getReturnType(); }
-        @Override public int getAccessFlags() { return delegate.getAccessFlags(); }
-        @Override @javax.annotation.Nonnull public Set<? extends com.android.tools.smali.dexlib2.iface.Annotation> getAnnotations() { return delegate.getAnnotations(); }
-        @Override @javax.annotation.Nonnull public Set<com.android.tools.smali.dexlib2.HiddenApiRestriction> getHiddenApiRestrictions() { return delegate.getHiddenApiRestrictions(); }
-        @Override @javax.annotation.Nullable public com.android.tools.smali.dexlib2.iface.MethodImplementation getImplementation() {
-            com.android.tools.smali.dexlib2.iface.MethodImplementation impl = delegate.getImplementation();
-            if (impl == null) return null;
-            return new MethodImplementationStripper(impl, options);
-        }
-        @Override public int compareTo(@javax.annotation.Nonnull com.android.tools.smali.dexlib2.iface.reference.MethodReference o) { return delegate.compareTo(o); }
-        @Override public void validateReference() throws com.android.tools.smali.dexlib2.iface.reference.Reference.InvalidReferenceException { delegate.validateReference(); }
-    }
-
-    // method implemention stripper
-    private class MethodImplementationStripper implements com.android.tools.smali.dexlib2.iface.MethodImplementation {
-        private final com.android.tools.smali.dexlib2.iface.MethodImplementation delegate;
-        private final CompilationOptions options;
-
-        public MethodImplementationStripper(com.android.tools.smali.dexlib2.iface.MethodImplementation delegate, CompilationOptions options) {
-            this.delegate = delegate;
-            this.options = options;
-        }
-
-        @Override public int getRegisterCount() { return delegate.getRegisterCount(); }
-        @NonNull
-        @Override public Iterable<? extends com.android.tools.smali.dexlib2.iface.instruction.Instruction> getInstructions() { return delegate.getInstructions(); }
-        @NonNull
-        @Override public List<? extends com.android.tools.smali.dexlib2.iface.TryBlock<? extends com.android.tools.smali.dexlib2.iface.ExceptionHandler>> getTryBlocks() { return delegate.getTryBlocks(); }
-
-        @NonNull
-        @Override public Iterable<? extends com.android.tools.smali.dexlib2.iface.debug.DebugItem> getDebugItems() {
-            if (options.removeAllDebug) return new ArrayList<>();
-            List<com.android.tools.smali.dexlib2.iface.debug.DebugItem> filtered = new ArrayList<>();
-            for (com.android.tools.smali.dexlib2.iface.debug.DebugItem item : delegate.getDebugItems()) {
-                boolean remove = false;
-                switch (item.getDebugItemType()) {
-                    case com.android.tools.smali.dexlib2.DebugItemType.SET_SOURCE_FILE:
-                        if (options.removeDebugSource) remove = true;
-                        break;
-                    case com.android.tools.smali.dexlib2.DebugItemType.LINE_NUMBER:
-                        if (options.removeDebugLine) remove = true;
-                        break;
-                    case com.android.tools.smali.dexlib2.DebugItemType.PROLOGUE_END:
-                        if (options.removeDebugPrologue) remove = true;
-                        break;
-                    case com.android.tools.smali.dexlib2.DebugItemType.EPILOGUE_BEGIN:
-                        // Prologue option usually covers epilogue too in some tools, or we can map it
-                        if (options.removeDebugPrologue) remove = true;
-                        break;
-                    case com.android.tools.smali.dexlib2.DebugItemType.START_LOCAL:
-                    case com.android.tools.smali.dexlib2.DebugItemType.END_LOCAL:
-                    case com.android.tools.smali.dexlib2.DebugItemType.RESTART_LOCAL:
-                    case com.android.tools.smali.dexlib2.DebugItemType.START_LOCAL_EXTENDED:
-                        if (options.removeDebugLocal) remove = true;
-                        break;
-                }
-                if (!remove) filtered.add(item);
-            }
-            // Param debug info is usually handled via method parameters if we want to strip names,
-            // but in debug_info_item they are also present.
-            // dexlib2 doesn't easily expose the parameter names list from debug_info_item here.
-            return filtered;
-        }
-    }
 
 }

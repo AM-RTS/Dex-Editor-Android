@@ -40,7 +40,6 @@ package modder.hub.dexeditor.activity;
 import android.annotation.SuppressLint;
 import android.content.DialogInterface;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.View;
@@ -50,6 +49,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
@@ -70,6 +70,7 @@ import io.noties.markwon.Markwon;
 import modder.hub.dexeditor.R;
 import modder.hub.dexeditor.fragment.SettingsFragment;
 import modder.hub.dexeditor.views.AlertCircularProgress;
+import modder.hub.dexeditor.utils.EdgeToEdge;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.MediaType;
@@ -100,6 +101,13 @@ public class AIOverViewActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.ai_overview_activity);
+        EdgeToEdge.apply(this);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                handleBackPress();
+            }
+        });
         initialize(savedInstanceState);
         initializeLogic();
 
@@ -117,7 +125,7 @@ public class AIOverViewActivity extends AppCompatActivity {
         toolbar.setNavigationOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                onBackPressed();
+                handleBackPress();
             }
         });
 
@@ -129,11 +137,11 @@ public class AIOverViewActivity extends AppCompatActivity {
         setTitle("AI Explanation");
         markdownText.setTextIsSelectable(true);
         smaliCode = getIntent().getStringExtra("smali");
-        SharedPreferences pref = getSharedPreferences("editor_prefs", MODE_PRIVATE);
-        if (pref.contains("gemini_api_key")) {
-            GEMINI_API_KEY = pref.getString("gemini_api_key", "Key");
-        } else {
+        GEMINI_API_KEY = SettingsFragment.getChatGptApiKey(this);
+        if (GEMINI_API_KEY.isEmpty()) {
             startActivity(new Intent(AIOverViewActivity.this, SettingsActivity.class));
+            finish();
+            return;
         }
         boolean allowEditPrompt = SettingsFragment.shouldEditAiPrompt(this);
         if (allowEditPrompt) {
@@ -210,7 +218,7 @@ public class AIOverViewActivity extends AppCompatActivity {
 
             Request request = new Request.Builder()
                     .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + GEMINI_API_KEY)
-                    .post(RequestBody.create(MediaType.parse("application/json"), requestBody.toString()))
+                    .post(RequestBody.create(requestBody.toString(), MediaType.get("application/json")))
                     .addHeader("Content-Type", "application/json")
                     .build();
 
@@ -267,11 +275,10 @@ public class AIOverViewActivity extends AppCompatActivity {
         markwon.setMarkdown(markdownText, content);
     }
 
-    @Override
-    public void onBackPressed() {
+    private void handleBackPress() {
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastBackPressTime < DOUBLE_PRESS_INTERVAL) {
-            super.onBackPressed();
+            finish();
         } else {
             lastBackPressTime = currentTime;
             modder.hub.dexeditor.utils.SketchwareUtil.showMessage(this, "Press back again to exit");

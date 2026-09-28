@@ -2,19 +2,19 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
         android:id="@+id/search"
-        android:title="Search"
+        android:title="@string/search_action"
         android:visible="true"
         android:icon="@drawable/ic_search_mt"
         app:actionViewClass="androidx.appcompat.widget.SearchView"
-        app:showAsAction="always" />
+        app:showAsAction="ifRoom" />
     <item
         app:showAsAction="always"
         android:icon="@drawable/ic_swap"
         android:id="@+id/strings_list"
-        android:title="Show Strings"/>    
+        android:title="@string/show_strings"/>
     <item
         app:showAsAction="always"
         android:icon="@drawable/ic_close_mt"
         android:id="@+id/close"
-        android:title="Close"/>
+        android:title="@string/close"/>
 </menu>

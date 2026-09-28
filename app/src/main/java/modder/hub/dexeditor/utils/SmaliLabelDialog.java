@@ -49,6 +49,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import modder.hub.dexeditor.R;
 import modder.hub.dexeditor.views.FastScrollerRecyclerView;
 
@@ -100,11 +101,12 @@ public class SmaliLabelDialog extends Dialog {
 				textView = itemView.findViewById(R.id.result_item_label);
 				container = itemView.findViewById(R.id.item_container);
 				
-				container.setOnClickListener(new View.OnClickListener() {
-					@Override
-					public void onClick(View v) {
-						if (labelClickListener != null) {
-							labelClickListener.onLabelClick(filteredItems.get(getAdapterPosition()));
+					container.setOnClickListener(new View.OnClickListener() {
+						@Override
+						public void onClick(View v) {
+							int position = getBindingAdapterPosition();
+							if (labelClickListener != null && position != RecyclerView.NO_POSITION) {
+								labelClickListener.onLabelClick(filteredItems.get(position));
 						}
 					}
 				});
@@ -136,8 +138,8 @@ public class SmaliLabelDialog extends Dialog {
 			
 			// Apply query text bolding if query exists
 			if (!TextUtils.isEmpty(currentQuery)) {
-				String lowerItem = item.toLowerCase();
-				String lowerQuery = currentQuery.toLowerCase();
+				String lowerItem = item.toLowerCase(Locale.ROOT);
+				String lowerQuery = currentQuery.toLowerCase(Locale.ROOT);
 				int index = lowerItem.indexOf(lowerQuery);
 				
 				while (index >= 0) {
@@ -179,7 +181,7 @@ public class SmaliLabelDialog extends Dialog {
 			filtered.addAll(originalItems);
 		} else {
 			for (String item : originalItems) {
-				if (item.toLowerCase().contains(query.toLowerCase())) {
+				if (item.toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT))) {
 					filtered.add(item);
 				}
 			}
